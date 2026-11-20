@@ -37,6 +37,16 @@ def main(argv: list[str] | None = None) -> int:
     rec.add_argument("--rps", type=float, default=8.0, help="max requests/second (exchange limit 25)")
     rec.add_argument("--no-ws", action="store_true",
                      help="do not use the live websocket even if API keys are set")
+    bf = sub.add_parser("backfill", help="download past resolved markets from public data (no key)")
+    bf.add_argument("--db", type=Path, default=DEFAULT_DB)
+    bf.add_argument("--assets", default="btc")
+    bf.add_argument("--horizons", default="15m,1h")
+    bf.add_argument("--days", type=float, default=45)
+    bf.add_argument("--rps", type=float, default=8.0, help="max requests/second (public limit 20)")
+    st = sub.add_parser("study", help="test the late-window leader strategy on backfilled data")
+    st.add_argument("--db", type=Path, default=DEFAULT_DB)
+    st.add_argument("--theta", type=float, default=0.095, help="taker fee coefficient (Tier 1 = 0.095)")
+    st.add_argument("--json", action="store_true")
     rep = sub.add_parser("report", help="summarize a recording")
     rep.add_argument("--db", type=Path, default=DEFAULT_DB)
     rep.add_argument("--max-ask", type=float, default=0.98)
@@ -64,9 +74,25 @@ def main(argv: list[str] | None = None) -> int:
         stats = Recorder(conn, cfg, feed=feed, feed_queue=q).run(args.duration)
         print(f"Stopped: {stats}")
         return 0
+    if args.cmd == "backfill":
+        from .backfill import Backfill
+        args.db.parent.mkdir(parents=True, exist_ok=True)
+        b = Backfill(db.connect(args.db), assets=tuple(args.assets.split(",")),
+                     horizons=tuple(args.horizons.split(",")), days=args.days, rps=args.rps)
+        print(f"Done: {b.run()}")
+        return 0
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)
         return 1
+    if args.cmd == "study":
+        import json
+        from .backfill import SCHEMA
+        from .study import format_study, run_study
+        conn = db.connect(args.db)
+        conn.executescript(SCHEMA)
+        res = run_study(conn, theta=args.theta)
+        print(json.dumps(res, indent=2, default=str) if args.json else format_study(res))
+        return 0
     rep_ = build_report(db.connect(args.db), max_ask=args.max_ask)
     print(to_json(rep_) if args.json else format_report(rep_))
     return 0

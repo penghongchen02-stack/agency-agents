@@ -100,3 +100,47 @@ def test_ws_messages_flow_into_db(tmp_path):
     assert conn.execute("SELECT price, quantity, taker_intent FROM trades").fetchone() == (
         0.97, 5.0, "ORDER_INTENT_BUY_LONG")
     assert conn.execute("SELECT COUNT(*) FROM events WHERE level='WARN'").fetchone()[0] == 1
+
+
+def _synthetic_backfill(tmp_path, n=90):
+    from pmus_recorder.backfill import SCHEMA
+    conn = db.connect(tmp_path / "s.sqlite")
+    conn.executescript(SCHEMA)
+    base = 1_800_000_000
+    for i in range(n):
+        we = base + i * 900
+        up = i % 3 != 0                       # 2/3 of markets resolve UP
+        close = 101.0 if up else 99.0
+        conn.execute("INSERT INTO markets(slug, asset, horizon, window_start, window_end, price_to_beat, "
+                     "settlement_price, outcome, first_seen, updated) VALUES (?,?,?,?,?,?,?,?,0,0)",
+                     (f"m{i}", "btc", "15m", we - 900, we, 100.0, close, "UP" if up else "DOWN"))
+        # index sits at the final value for the last 200 s (leader is right)
+        conn.executemany("INSERT OR REPLACE INTO index_ticks VALUES ('btc',?,?)",
+                         [(t, close) for t in range(we - 200, we)])
+        # price points at T-180/-120/-60: leader buyable at 0.95, except every 5th market at 0.99
+        lead_px = 0.99 if i % 5 == 0 else 0.95
+        for d in (180, 120, 60):
+            upp, dnp = (lead_px, 1 - lead_px + 0.01) if up else (1 - lead_px + 0.01, lead_px)
+            conn.execute("INSERT INTO price_points VALUES (?,?,?,?)", (f"m{i}", we - d, upp, dnp))
+        conn.execute("INSERT INTO backfill_done VALUES (?,3,0)", (f"m{i}",))
+    conn.commit()
+    return conn
+
+
+def test_study_excludes_unbuyable_and_has_no_lookahead(tmp_path):
+    from pmus_recorder.study import run_study, evaluate, observations, load
+    conn = _synthetic_backfill(tmp_path)
+    rows = observations(*load(conn))
+    assert all(r["won"] for r in rows)                      # leader always right in this fixture
+    res = evaluate(rows, 60, 0, 0.98, 0.095)
+    assert res["n"] == sum(1 for r in rows if r["offset"] == 60 and r["price"] < 0.99)
+    assert abs(res["avg_price"] - 0.95) < 1e-9              # the 0.99 points were never "filled"
+    out = run_study(conn)
+    assert out["availability"][60]["leader_price>=0.99"] > 0
+    assert out["test_result"]["n"] > 0
+
+
+def test_projection_ignores_future_ticks():
+    ticks = {t: 100.0 for t in range(900, 1000)}
+    ticks.update({t: 200.0 for t in range(961, 1000)})       # jump AFTER decision time 960
+    assert projected_close(ticks, 1000, 960) == 100.0

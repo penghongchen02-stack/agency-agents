@@ -103,6 +103,34 @@ The **report** shows:
   - the average price
   - a naive EV per contract after the taker fee, assuming perfect fills, so it is an upper bound
 
+### No-key historical study: `backfill` + `study`
+
+Polymarket US keeps resolved markets, plus the exchange's **stored display prices** (`/v1/price-history`, about one point per minute; `longPrice` is the Up price from the best ask, `shortPrice` is the Down price from 1 minus the best bid), and the settlement index history. With that you can test the late-window strategy on **past** markets right away, with no key and no waiting:
+
+```bash
+python -m pmus_recorder backfill --days 45            # BTC 15m + 1h, about 5,400 markets, about 25 min at 12 req/s
+python -m pmus_recorder study                          # availability, calibration, walk-forward test
+```
+
+`study` makes every decision using only data available at T-180, T-120, or T-60 seconds:
+- **Projected close:** the elapsed part of the 60-second settlement average, with the latest price filling the rest.
+- **Leader** and its displayed price.
+- **P&L** after the Tier 1 taker fee.
+
+It reports:
+- how often there is anything to buy at all
+- **calibration**: whether a leader priced at X actually wins more often than X
+- a **walk-forward test**: parameters are chosen on the first 2/3 of the dates and reported on the last 1/3
+
+A $0.99 display price is treated as **unbuyable**, because live books showed a $0.99 bid with no offer behind it.
+
+Limits:
+- Display prices carry **no size**, so fill size and slippage are unknown.
+- There is about one point per minute.
+- Index reconstruction is approximate.
+
+Treat a positive result as a reason to test with live books and tiny size, not as proof of profit.
+
 ### What the first live test run found (2026-11-20, 25 min, BTC + ETH, 5m/15m/1h)
 
 - **The public order book is cached up to 30 s.** It returned `cache-control: public, max-age=30` with the `Age` header counting up, and recorded snapshots were on average 14 s old (max 29 s). A last-two-minutes strategy **needs the authenticated websocket**.
