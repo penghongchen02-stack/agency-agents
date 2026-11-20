@@ -118,6 +118,14 @@ BOTS = (
     Bot("momentum_fade", "xrp", "15m", {"offset": 120, "lookback_min": 3, "drop": 0.3}, -0.0281, variant_of="momentum"),
 )
 
+ORIGINALS = tuple(b for b in BOTS if not b.variant_of)
+
+
+def select_bots(which: str = "originals"):
+    """'originals' = the 7 original bots on 4 coins; 'all' adds the variants and search winners."""
+    return BOTS if which == "all" else ORIGINALS
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS paper_markets (
     slug TEXT PRIMARY KEY, asset TEXT, horizon TEXT, window_start REAL, window_end REAL,

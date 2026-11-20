@@ -181,7 +181,7 @@ See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md).
 **Dashboard.** `python -m pmus_recorder dashboard-export` writes `data/bots.json`, one row per bot and coin with its backtest and live paper results, for a dashboard.
 
 ```bash
-nohup python -m pmus_recorder paper > paper.log 2>&1 &      # runs until stopped; resumes after restart
+nohup python -m pmus_recorder paper > paper.log 2>&1 &      # the 7 originals (add --bots all for variants + search winners)      # runs until stopped; resumes after restart
 python -m pmus_recorder paper-report                         # per-bot results vs the backtest
 ```
 

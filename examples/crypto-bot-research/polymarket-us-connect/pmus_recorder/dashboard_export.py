@@ -51,9 +51,9 @@ def export_rows(conn: sqlite3.Connection, bots=BOTS) -> list[dict]:
     return rows
 
 
-def export(db: Path, out: Path) -> dict:
+def export(db: Path, out: Path, bots=BOTS) -> dict:
     conn = sqlite3.connect(str(db))
-    rows = export_rows(conn)
+    rows = export_rows(conn, bots)
     first, last = conn.execute("SELECT MIN(ts), MAX(ts) FROM paper_quotes").fetchone()
     doc = {"rows": rows, "meta": [
         {"label": "dashboard_export.py", "value": Path(__file__).read_text(), "type": "code", "lang": "python"},

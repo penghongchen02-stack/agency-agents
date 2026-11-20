@@ -60,8 +60,11 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
     pp.add_argument("--duration", type=float, help="seconds to run (default: until Ctrl-C)")
     pp.add_argument("--quote-s", type=float, default=3.0, help="seconds between quote polls per market")
+    pp.add_argument("--bots", choices=("originals", "all"), default="originals",
+                    help="originals = the 7 original bots; all = also the variants and search winners")
     pr = sub.add_parser("paper-report", help="paper-trading results per bot vs the backtest")
     pr.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
+    pr.add_argument("--bots", choices=("originals", "all"), default="originals")
     se = sub.add_parser("search", help="luck-resistant search over many strategy variations")
     se.add_argument("--db", type=Path, default=DEFAULT_DB)
     se.add_argument("--min-trades", type=int, default=100)
@@ -71,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     de = sub.add_parser("dashboard-export", help="write per-bot backtest + paper results as JSON")
     de.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
     de.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "bots.json")
+    de.add_argument("--bots", choices=("originals", "all"), default="originals")
     rep = sub.add_parser("report", help="summarize a recording")
     rep.add_argument("--db", type=Path, default=DEFAULT_DB)
     rep.add_argument("--max-ask", type=float, default=0.98)
@@ -111,7 +115,9 @@ def main(argv: list[str] | None = None) -> int:
         args.db.parent.mkdir(parents=True, exist_ok=True)
         conn = db.connect(args.db)
         print(f"Paper trading into {args.db} (no orders are ever sent; Ctrl-C to stop)", flush=True)
-        stats = PaperTrader(conn, quote_s=args.quote_s, log=lambda s: print(s, flush=True)).run(args.duration)
+        from .paper import select_bots
+        stats = PaperTrader(conn, bots=select_bots(args.bots), quote_s=args.quote_s,
+                            log=lambda s: print(s, flush=True)).run(args.duration)
         print(f"Stopped: {stats}")
         return 0
     if not args.db.exists():
@@ -150,12 +156,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "dashboard-export":
         from .dashboard_export import export
-        doc = export(args.db, args.out)
+        from .paper import select_bots
+        doc = export(args.db, args.out, bots=select_bots(args.bots))
         print(f"Wrote {len(doc['rows'])} rows to {args.out}")
         return 0
     if args.cmd == "paper-report":
         from .paper import paper_report
-        print(paper_report(db.connect(args.db)))
+        from .paper import select_bots
+        print(paper_report(db.connect(args.db), bots=select_bots(args.bots)))
         return 0
     rep_ = build_report(db.connect(args.db), max_ask=args.max_ask)
     print(to_json(rep_) if args.json else format_report(rep_))
