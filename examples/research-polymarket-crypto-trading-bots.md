@@ -9,6 +9,8 @@
 > - ⚖️ [Crypto Up/Down Spread-Capture Strategist](../finance/finance-crypto-updown-spread-capture-strategist.md): the both-sides "paired cost under $1" family, with a directional tilt and reward farming.
 > - ⚡ [Crypto Up/Down Latency & Late-Window Strategist](../finance/finance-crypto-updown-latency-strategist.md): spot-tape latency, late-window certainty buying, and penny-floor harvesting.
 > - 🚀 [Token Launch Event Market Strategist](../finance/finance-token-launch-event-market-strategist.md): FDV threshold ladders and public-sale markets.
+>
+> **All four agents applied to this research:** [crypto-bot-research/](crypto-bot-research/README.md), covering the forensic audit, spread-capture spec, latency playbooks, and token-launch playbook.
 
 ---
 
@@ -53,6 +55,8 @@
 | 19 | [LIL222](https://www.polyresearchrobotics.com/reports/lil222) | BTC 5m | Penny-floor harvester | 1.6% | 25 d | +$6,267 | +56% | Buys at exactly $0.01 and immediately offers at $0.02. Whatever doesn't sell rides to settlement as a 99× lottery ticket. Win rate 1.36%. *The page header describes a different trader.* |
 | 20 | [Sharky6999](https://www.polyresearchrobotics.com/reports/sharky6999) | Crypto 34% (BTC/ETH/SOL/HYPE) + sports | Favorite buyer | 1.0% | 31 d | +$59,615 | +0.29% | About 97% of capital sits in the $0.90–$1.00 band, with a 98.9% WR. Its worst losses are all 5-minute BTC/ETH Up/Down markets. No filter helps. |
 | 21 | [ExitLiquidty](https://www.polyresearchrobotics.com/reports/exitliquidty) | Token-launch FDV & public-sale markets | B (event specialist) | 0% | 34 active d | +$330,940 cash-flow (+$185,765 resolved) | ~62–86% | Builds Yes ladders across MegaETH/EdgeX FDV thresholds, uses DEX price discovery while the CLOB lags, sells actively (1.37× sell/buy), and buys "No" on unreachable sale thresholds. |
+
+**Unique wallets: 19.** 080BEc and B1C58 share one address, and so do the two Bonereaper reports. VidarX's address is only given truncated.
 
 KCH123 (a sports bettor) and a few others place occasional crypto bets. Those are incidental and not included.
 
@@ -99,7 +103,9 @@ FDV threshold ladders on token launches (e.g. `megaeth-market-cap-fdv-1pt5b-one-
 
 ## 5. Data-quality caveats found while reading
 - Several reports disagree with Polymarket's own P&L (FlippingSharks, NeverSmiling, X-MoneyForWhiskas, sixx7, ExitLiquidty).
-- B1C58 and 080BEc are the same wallet.
+- B1C58 and 080BEc are the same wallet, and so are Bonereaper April and June.
+- 0x04b6d7 and ohanism split spread and directional P&L as "spread + hedge tax + directional = net", which counts the losing leg twice. Under the "net − spread" rule the other reports use, 0x04b6d7's directional result is about −$154K, not +$1.79M (see the [forensic audit](crypto-bot-research/01-forensic-audit.md)).
+- ExitLiquidty's "86.4% ROI" is total cash flow over all buys. On resolved buys it is 62.0%.
 - LIL222's header block describes a different trader.
 - VidarX proposes a sportsbook feed for an all-crypto book.
 - Rolling-window counts and day counts are inconsistent in several reports.

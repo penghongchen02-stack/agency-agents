@@ -39,6 +39,14 @@ These examples answer the question: *"What does it actually look like when the f
 
 **Key takeaway:** All 8 agents ran in parallel and produced coherent, cross-referencing plans without coordination overhead. The output demonstrates the agency's ability to go from "find an opportunity" to "here's the full blueprint" in a single session.
 
+### [crypto-bot-research/](./crypto-bot-research/README.md)
+
+**What:** Four Finance agents applied in parallel to 21 on-chain reconstructions of crypto prediction-market bots ([source catalogue](./research-polymarket-crypto-trading-bots.md)).
+
+**Agents used:** Prediction Market Wallet Forensics Analyst, Crypto Up/Down Spread-Capture Strategist, Crypto Up/Down Latency & Late-Window Strategist, and Token Launch Event Market Strategist.
+
+**Key takeaway:** The forensic pass rewrote the strategists' inputs. It found reward-dependent P&L, hindsight filters, and double-counted decompositions, so each strategy spec is built only on causal, reconciled evidence.
+
 ## Adding New Examples
 
 If you run an interesting multi-agent exercise, consider adding it here. Good examples show:
