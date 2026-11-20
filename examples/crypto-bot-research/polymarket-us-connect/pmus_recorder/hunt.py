@@ -7,8 +7,9 @@ Each round:
      7 time-of-day filters (any, or one 4-hour UTC block) times 4 volatility filters (any,
      or the low / mid / high third of the index's recent volatility, cut on period A).
      That is 332,640 variations per segment and 3,991,680 across 12 segments.
-     Plus a new family, cross-window arbitrage (strategies_cross.py): pairs that pay >= $1
-     whatever the coin does, bought only when both legs cost < $1 with fees.
+     Plus new bot families from hunt_families.py, one more added each round (cross-window
+     arbitrage, cross-coin lead, cross-window confirm, arbitrage repeat); all count toward the
+     Bonferroni bar, and a confirmed top-5 family is auto-added (state.json "added").
   3. Apply the luck checks of search.py, with the Bonferroni bar set for all of them:
      dev = A + B (fixed dates from the first round), positive in A and in B, positive at a
      pessimistic delay, dev z-score (no-edge null) >= bar.
@@ -102,9 +103,14 @@ def hunt_round(conn, state, theta=0.095, min_trades=100, alpha=0.05, delays=(60,
     main, pess = delays
     data, ends, fits, vol_cuts = _prep(conn, delays, state)
     cut_a, cut_b, freeze = state["cut_a"], state["cut_b"], state["freeze"]
+    from .hunt_families import FAMILIES, FAMILY_QUEUE
     base = list(configs())
     segs = sorted({r["seg"] for r in data[main]})
-    n_tests = len(base) * len(HOUR_BLOCKS) * len(VOL) * len(segs)
+    tested = list(state.get("families", []))
+    new = next((f for f in FAMILY_QUEUE if f not in tested), None)
+    if new:
+        tested.append(new)                   # one new family per round
+    n_tests = len(base) * len(HOUR_BLOCKS) * len(VOL) * len(segs) + sum(FAMILIES[f]["grid"](segs) for f in tested)
     bar = NormalDist().inv_cdf(1 - alpha / n_tests)
     span = {"hold": (freeze - cut_b) / 86400, "forward": max(ends[-1] - freeze, 0) / 86400}
     cands = []
@@ -162,38 +168,12 @@ def hunt_round(conn, state, theta=0.095, min_trades=100, alpha=0.05, delays=(60,
                           "per_day": float(p.sum() / span["forward"]) if span["forward"] > 0 else 0.0,
                           "_pnl": p, "_day": am["day"][sel]}
         cands.append(res)
-    cands += _arb_candidates(conn, state, theta, main, span)
-    return {"n_tests": n_tests, "bar": bar, "span_days": span, "candidates": cands, "fits": fits}
-
-
-def _arb_candidates(conn, state, theta, delay, span):
-    """Cross-window arbitrage pairs (strategies_cross.py), one candidate for all coins."""
-    from . import study
-    from .strategies_cross import load_groups, pair_trades
-    study.PRICE_DELAY_S = delay
-    tr = pair_trades(load_groups(conn), theta=theta, max_cost=1.0)
-    if not tr:
-        return []
-    t_end = np.array([t["t_end"] for t in tr])
-    pnl = np.array([t["pnl"] for t in tr])
-    pay = np.array([t["pay"] for t in tr])
-    day = t_end // 86400
-    per = {"dev": t_end < state["cut_b"], "hold": (t_end >= state["cut_b"]) & (t_end <= state["freeze"]),
-           "fwd": t_end > state["freeze"]}
-    zero_pay = int((pay < 1).sum())
-
-    def part(sel, days):
-        p = pnl[sel]
-        return {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
-                "z": 99.0 if len(p) and zero_pay == 0 else 0.0, "losses": int((p < 0).sum()),
-                "per_day": float(p.sum() / days) if days > 0 else 0.0, "_pnl": p, "_day": day[sel]}
-    hold = part(per["hold"], span["hold"])
-    return [{"segment": "all coins, paired windows", "family": "cross_window_arb",
-             "config": {"rule": "buy Up on the lower-open market and Down on the higher-open market of the same "
-                                "coin closing at the same instant (opens >= $0.01 apart), when both cost < $1 with fees"},
-             "dev_z": 99.0 if zero_pay == 0 else 0.0, "zero_payout_pairs": zero_pay,
-             "dev": part(per["dev"], (state["cut_b"] - state["cut_a"]) / 86400 * 3),
-             "hold": hold, "hold_pess": hold, "forward": part(per["fwd"], span["forward"])}]
+    ctx = {"conn": conn, "data": data, "delays": delays, "state": state, "theta": theta, "span": span, "bar": bar}
+    for f in tested:
+        cands += FAMILIES[f]["run"](ctx)
+    state["families"] = tested
+    return {"n_tests": n_tests, "bar": bar, "span_days": span, "candidates": cands, "fits": fits,
+            "families": tested, "new_family": new}
 
 
 def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
@@ -201,6 +181,9 @@ def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
             if c["hold"]["n"] and c["hold"]["ev"] > 0 and c["hold_pess"]["n"] and c["hold_pess"]["ev"] > 0
             and c["hold"]["z"] >= 2.0]
     ranked = sorted(res["candidates"], key=lambda c: c["hold"]["per_day"], reverse=True)
+    # arb_repeat already contains every once-per-pair trade: count only one of them
+    if any(c.get("family") == "arb_repeat" for c in conf):
+        conf = [c for c in conf if c.get("family") != "cross_window_arb"]
 
     def port(key):
         pnl = np.concatenate([c[key]["_pnl"] for c in conf]) if conf else np.array([])
@@ -229,19 +212,21 @@ def leaderboard(res, ev, round_no, stamp) -> str:
          f"and on at least {ev['min_forward_days']} new forward days. "
          f"**Met: {'YES' if ev['met'] else 'not yet'}.**", "",
          f"Variations tested: {res['n_tests']:,}. Luck bar: dev z >= {res['bar']:.2f}. "
-         f"Holdout {res['span_days']['hold']:.1f} days, forward {res['span_days']['forward']:.1f} days.", "",
-         "| Rank | Coin / window | Rule | Holdout trades | Losses | Profit / contract | $/day at 1 contract | "
+         f"Holdout {res['span_days']['hold']:.1f} days, forward {res['span_days']['forward']:.1f} days.",
+         f"Bot families tested so far: {', '.join(['base grid'] + res.get('families', []))}"
+         + (f" (new this round: {res['new_family']})." if res.get("new_family") else "."), "",
+         "| Rank | Coin / window | Bot family | Rule | Holdout trades | Losses | Profit / contract | $/day at 1 contract | "
          f"$/day at {ev['cap']} | Forward $/day at {ev['cap']} | Confirmed |",
-         "|---|---|---|---|---|---|---|---|---|---|"]
+         "|---|---|---|---|---|---|---|---|---|---|---|"]
     conf = {id(c) for c in ev["confirmed"]}
     for i, c in enumerate(ev["ranked"], 1):
         h, f = c["hold"], c["forward"]
-        L.append(f"| {i} | {c['segment']} | {_cfg_text(c['config'])} | {h['n']} | {h['losses']} | "
+        L.append(f"| {i} | {c['segment']} | {c.get('family', 'base grid')} | {_cfg_text(c['config'])} | {h['n']} | {h['losses']} | "
                  f"{(h['ev'] or 0) * 100:+.1f}¢ | ${h['per_day']:.2f} | ${h['per_day'] * ev['cap']:.0f} | "
                  f"{'$%.0f' % (f['per_day'] * ev['cap']) if f['n'] else 'no data yet'} | "
                  f"{'yes' if id(c) in conf else 'no'} |")
     if not ev["ranked"]:
-        L.append("| - | - | no variation passed the luck checks | | | | | | | |")
+        L.append("| - | - | - | no variation passed the luck checks | | | | | | | |")
     ph, pf = ev["portfolio_hold"], ev["portfolio_forward"]
     L += ["", f"**All confirmed winners together at {ev['cap']} contracts per trade:**"]
     L.append(f"- Holdout: ${ph['mean']:.0f}/day, worst day ${ph['worst']:.0f}, {ph['positive_days']:.0%} of "
@@ -281,6 +266,14 @@ def run_hunt(db_path: Path, out_dir: Path, cap=50, target=100.0, interval=3600, 
         res = hunt_round(conn, state)
         ev = evaluate_request(res, cap=cap, target=target)
         state["rounds"] += 1
+        added = state.setdefault("added", {})
+        conf_ids = {id(c) for c in ev["confirmed"]}
+        for c in ev["ranked"]:
+            key = c.get("family", "base") + " | " + c["segment"]
+            if id(c) in conf_ids and key not in added:
+                added[key] = {"round": state["rounds"], "rule": _cfg_text(c["config"]),
+                              "hold_per_day": c["hold"]["per_day"]}
+                log(f"AUTO-ADDED bot: {key}: {_cfg_text(c['config'])}")
         stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         md = leaderboard(res, ev, state["rounds"], stamp)
         (out_dir / "leaderboard.md").write_text(md)

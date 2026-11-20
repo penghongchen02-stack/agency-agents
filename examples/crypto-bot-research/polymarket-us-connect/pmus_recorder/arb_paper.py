@@ -7,7 +7,8 @@ same group with ptb(B) - ptb(A) >= gap,
 
     ask_up(A) + (1 - bid_up(B)) + both taker fees < 1 - min_edge
 
-it records one paper pair trade (once per pair) with each leg's quote time and, as a rough
+it records a paper pair trade (at most one per pair per minute: the first one is the
+once-per-pair bot, all of them the arb_repeat bot) with each leg's quote time and, as a rough
 size check, the contracts offered at that price in the public book (CDN-cached up to 30 s).
 After the close it settles both legs from the exchange's published result.
 """
@@ -33,7 +34,7 @@ CREATE TABLE IF NOT EXISTS arb_quotes (slug TEXT, ts REAL, best_bid REAL, best_a
 CREATE TABLE IF NOT EXISTS arb_trades (
     a TEXT, b TEXT, asset TEXT, window_end INTEGER, ts REAL, secs_left REAL,
     up_a REAL, down_b REAL, cost REAL, quote_gap_s REAL, qty_a REAL, qty_b REAL,
-    pay REAL, pnl REAL, PRIMARY KEY (a, b));
+    pay REAL, pnl REAL, minute INTEGER DEFAULT 0, PRIMARY KEY (a, b, minute));
 """
 
 
@@ -48,7 +49,7 @@ class ArbPaper:
         self.quote_s, self.window_s = quote_s, window_s
         self.markets: dict[str, dict] = {}
         self.quotes: dict[str, tuple] = {}            # slug -> (ts, bid, ask)
-        self.done = {(a, b) for a, b in conn.execute("SELECT a, b FROM arb_trades")}
+        self.done = {(a, b, mi) for a, b, mi in conn.execute("SELECT a, b, minute FROM arb_trades")}
         for slug, a, h, we, ptb in conn.execute(
                 "SELECT slug, asset, horizon, window_end, price_to_beat FROM arb_markets WHERE settled=0"):
             self.markets[slug] = {"slug": slug, "asset": a, "horizon": h, "t_end": we, "ptb": ptb,
@@ -118,7 +119,8 @@ class ArbPaper:
             for B in group:
                 if A is B or A["ptb"] is None or B["ptb"] is None or B["ptb"] - A["ptb"] < self.gap:
                     continue
-                if (A["slug"], B["slug"]) in self.done:
+                key = (A["slug"], B["slug"], int(now // 60))     # at most one pair per minute (arb_repeat)
+                if key in self.done:
                     continue
                 qa, qb = self.quotes.get(A["slug"]), self.quotes.get(B["slug"])
                 if not qa or not qb or qa[2] is None or qb[1] is None or abs(qa[0] - qb[0]) > self.quote_s:
@@ -130,11 +132,11 @@ class ArbPaper:
                 if cost >= 1 - self.min_edge:
                     continue
                 qty_a, qty_b = self._book_qty(A["slug"], True, up_a), self._book_qty(B["slug"], False, down_b)
-                self.done.add((A["slug"], B["slug"]))
+                self.done.add(key)
                 self.conn.execute("INSERT OR IGNORE INTO arb_trades(a, b, asset, window_end, ts, secs_left, up_a, "
-                                  "down_b, cost, quote_gap_s, qty_a, qty_b) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                  "down_b, cost, quote_gap_s, qty_a, qty_b, minute) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                   (A["slug"], B["slug"], A["asset"], A["t_end"], now, A["t_end"] - now, up_a,
-                                   down_b, cost, abs(qa[0] - qb[0]), qty_a, qty_b))
+                                   down_b, cost, abs(qa[0] - qb[0]), qty_a, qty_b, key[2]))
                 self.stats["pairs"] += 1
                 self.log(f"PAPER PAIR {A['asset'].upper()} {A['horizon']}/{B['horizon']} close {A['t_end']}: "
                          f"Up {up_a:.2f} + Down {down_b:.2f} = {cost:.3f} with fees, T-{A['t_end'] - now:.0f}s, "
@@ -150,13 +152,17 @@ class ArbPaper:
         self.conn.execute("UPDATE arb_markets SET settlement_price=?, outcome=?, settled=1 WHERE slug=?",
                           (close, settle_outcome(ptb, close), m["slug"]))
         self.stats["settled"] += 1
-        for a, b, cost in self.conn.execute(
-                "SELECT t.a, t.b, t.cost FROM arb_trades t JOIN arb_markets ma ON ma.slug=t.a "
-                "JOIN arb_markets mb ON mb.slug=t.b WHERE t.pay IS NULL AND ma.settled=1 AND mb.settled=1").fetchall():
-            oa, ob = (self.conn.execute("SELECT outcome FROM arb_markets WHERE slug=?", (s,)).fetchone()[0] for s in (a, b))
+        pending = self.conn.execute(
+            "SELECT DISTINCT t.a, t.b FROM arb_trades t JOIN arb_markets ma ON ma.slug=t.a "
+            "JOIN arb_markets mb ON mb.slug=t.b WHERE t.pay IS NULL AND ma.settled=1 AND mb.settled=1").fetchall()
+        for a, b in pending:
+            oa, ob = (self.conn.execute("SELECT outcome FROM arb_markets WHERE slug=?", (x,)).fetchone()[0]
+                      for x in (a, b))
             pay = (1.0 if oa == "UP" else 0.0) + (1.0 if ob == "DOWN" else 0.0)
-            self.conn.execute("UPDATE arb_trades SET pay=?, pnl=? WHERE a=? AND b=?", (pay, pay - cost, a, b))
-            self.log(f"SETTLED PAIR {a} + {b}: pays {pay:.0f}, P&L {pay - cost:+.3f}")
+            self.conn.execute("UPDATE arb_trades SET pay=?, pnl=? - cost WHERE a=? AND b=? AND pay IS NULL",
+                              (pay, pay, a, b))
+            n, tot = self.conn.execute("SELECT COUNT(*), SUM(pnl) FROM arb_trades WHERE a=? AND b=?", (a, b)).fetchone()
+            self.log(f"SETTLED PAIR {a} + {b}: pays {pay:.0f} per pair, {n} buys, P&L {tot:+.3f}")
         return True
 
     def step(self, now):
@@ -198,6 +204,8 @@ class ArbPaper:
 
 def arb_report(conn) -> str:
     conn.executescript(SCHEMA)
+    first = conn.execute("SELECT COUNT(DISTINCT a || b), SUM(pnl) FROM arb_trades t WHERE pnl IS NOT NULL AND "
+                         "minute = (SELECT MIN(minute) FROM arb_trades u WHERE u.a=t.a AND u.b=t.b)").fetchone()
     rows = conn.execute("SELECT COUNT(*), SUM(pnl IS NOT NULL), SUM(pnl), AVG(cost), SUM(pay < 1), "
                         "AVG(quote_gap_s), AVG(MIN(COALESCE(qty_a, 0), COALESCE(qty_b, 0))), MIN(ts), MAX(ts) "
                         "FROM arb_trades").fetchone()
@@ -205,6 +213,7 @@ def arb_report(conn) -> str:
     if not n:
         return "Cross-window arbitrage paper test: no pairs yet."
     hours = max((t1 - t0) / 3600, 1e-9)
-    return (f"Cross-window arbitrage paper test: {n} pairs ({settled or 0} settled), P&L {pnl or 0:+.2f} per "
+    return (f"Once per pair: {first[0] or 0} settled pairs, P&L {first[1] or 0:+.2f}. "
+            f"Every cheap minute (arb_repeat): {n} pair buys ({settled or 0} settled), P&L {pnl or 0:+.2f} per "
             f"contract pair, avg cost {cost:.3f}, pairs that paid 0: {zero or 0}, avg time between leg quotes "
             f"{gap:.1f} s, avg smaller-leg book size {qty or 0:.0f} contracts, over {hours:.1f} h.")

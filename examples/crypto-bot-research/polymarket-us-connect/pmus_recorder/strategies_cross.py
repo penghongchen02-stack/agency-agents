@@ -51,8 +51,9 @@ def load_groups(conn):
     return {k: v for k, v in groups.items() if len(v) > 1}
 
 
-def pair_trades(groups, theta=0.095, max_cost=1.0, gap=0.01, min_left=30, max_left=600):
-    """First cheap-enough dominance pair per (A, B), causal in time. Returns trade dicts."""
+def pair_trades(groups, theta=0.095, max_cost=1.0, gap=0.01, min_left=30, max_left=600, repeat=False):
+    """First cheap-enough dominance pair per (A, B), causal in time (every cheap minute if
+    `repeat`, each one more contract pair). Returns trade dicts."""
     out = []
     for (asset, t_end), ms in groups.items():
         for A in ms:
@@ -74,5 +75,6 @@ def pair_trades(groups, theta=0.095, max_cost=1.0, gap=0.01, min_left=30, max_le
                                 "a": A["slug"], "b": B["slug"], "ha": A["horizon"], "hb": B["horizon"],
                                 "up_a": up_a, "down_b": down_b, "cost": cost, "pay": pay,
                                 "pnl": pay - cost})
-                    break
+                    if not repeat:
+                        break
     return out

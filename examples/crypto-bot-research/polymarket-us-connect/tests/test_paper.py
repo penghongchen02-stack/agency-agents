@@ -102,3 +102,47 @@ def test_dominance_pair_always_pays_at_least_one():
         B = {"slug": "b", "horizon": "5m", "ptb": 101.0, "won_up": b_up, "pts": {900: (0.45, 0.50)}}
         trades = pair_trades({("btc", 1000): [A, B]}, max_cost=1.0)
         assert len(trades) == 1 and trades[0]["pay"] >= 1     # Up(A) 0.40 + Down(B) 0.50 + fees < 1
+
+
+def test_arb_paper_records_and_settles_pairs():
+    import time as _t
+    from pmus_recorder.arb_paper import ArbPaper, arb_report
+
+    class Rest:
+        def __init__(self):
+            self.resolved = False
+            self.q = {"a": (0.40, 0.41), "b": (0.48, 0.50)}       # Up(a) 0.41 + Down(b) 1-0.48 = 0.93
+
+        def public_get(self, path, params=None):
+            slug = path.rsplit("/", 1)[-1]
+            if path.startswith("/v1/market/slug/"):
+                bid, ask = self.q[slug]
+                close = {"a": "100.5", "b": "100.5"}[slug]
+                ptb = {"a": "100.0", "b": "101.0"}[slug]
+                terms = {"priceToBeat": {"value": ptb}}
+                if self.resolved:
+                    terms["settlementPrice"] = {"value": close}
+                return _Resp({"market": {"bestBidQuote": {"value": str(bid)}, "bestAskQuote": {"value": str(ask)},
+                                         "assetPriceTerms": terms,
+                                         "status": "MARKET_STATUS_RESOLVED" if self.resolved else "MARKET_STATUS_OPEN"}})
+            return _Resp({"marketData": {"bids": [], "offers": []}, "markets": []})
+
+    rest = Rest()
+    ap = ArbPaper(sqlite3.connect(":memory:"), rest=rest, log=lambda s: None)
+    now = _t.time()
+    t_end = int(now) + 200
+    for slug, h, ptb in (("a", "1h", 100.0), ("b", "5m", 101.0)):
+        ap.markets[slug] = {"slug": slug, "asset": "btc", "horizon": h, "t_end": t_end, "ptb": ptb, "next_settle": 0}
+        ap.conn.execute("INSERT INTO arb_markets(slug, asset, horizon, window_end, price_to_beat) VALUES (?,?,?,?,?)",
+                        (slug, "btc", h, t_end, ptb))
+    for g in ap._groups(now):
+        for m in g:
+            ap.poll(m, now)
+        ap.check_pairs(g, now)
+    assert ap.conn.execute("SELECT COUNT(*) FROM arb_trades").fetchone()[0] == 1
+    rest.resolved = True
+    for m in list(ap.markets.values()):
+        ap.settle(m, now)
+    pay, pnl = ap.conn.execute("SELECT pay, pnl FROM arb_trades").fetchone()
+    assert pay == 2.0 and pnl > 1.0                       # close between the opens: both legs win
+    assert "pair" in arb_report(ap.conn)
