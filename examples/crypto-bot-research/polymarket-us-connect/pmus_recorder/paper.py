@@ -121,9 +121,13 @@ BOTS = (
 ORIGINALS = tuple(b for b in BOTS if not b.variant_of)
 
 
+RANKING = tuple(b for b in BOTS if b.name == "hourly_leader" and b.asset == "xrp")   # hunt's ranked XRP 1h bot
+
+
 def select_bots(which: str = "originals"):
-    """'originals' = the 7 original bots on 4 coins; 'all' adds the variants and search winners."""
-    return BOTS if which == "all" else ORIGINALS
+    """'originals' = the 7 original bots on 4 coins; 'ranking' = the hunt's ranked directional bot
+    (XRP 1h leader; the ranked arbitrage bot runs in arb-paper); 'all' = everything."""
+    return {"all": BOTS, "ranking": RANKING}.get(which, ORIGINALS)
 
 
 SCHEMA = """
