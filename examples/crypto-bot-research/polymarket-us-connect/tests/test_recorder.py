@@ -144,3 +144,28 @@ def test_projection_ignores_future_ticks():
     ticks = {t: 100.0 for t in range(900, 1000)}
     ticks.update({t: 200.0 for t in range(961, 1000)})       # jump AFTER decision time 960
     assert projected_close(ticks, 1000, 960) == 100.0
+
+
+def test_model_probability_shrinks_with_time_and_grows_with_margin():
+    from pmus_recorder.strategies import model_probability
+    T = 10_000
+    p_far = model_probability(0.0005, 1e-4, T, T - 180)
+    p_near = model_probability(0.0005, 1e-4, T, T - 10)
+    assert 0.5 < p_far < p_near <= 1.0
+    assert model_probability(0.002, 1e-4, T, T - 180) > p_far
+
+
+def test_compare_runs_on_synthetic(tmp_path):
+    from pmus_recorder.strategies import compare
+    conn = _synthetic_backfill(tmp_path)
+    # add noise to the index so volatility is defined
+    import random
+    random.seed(1)
+    rows = conn.execute("SELECT asset, ts, close FROM index_ticks").fetchall()
+    conn.executemany("UPDATE index_ticks SET close=? WHERE asset=? AND ts=?",
+                     [(c * (1 + random.gauss(0, 1e-5)), a, t) for a, t, c in rows])
+    conn.commit()
+    res = compare(conn, min_trades=5)
+    assert "btc 15m" in res["segments"]
+    fav = res["segments"]["btc 15m"]["families"]["favourite"]
+    assert fav["test"]["n"] > 0 and fav["test"]["avg_price"] < 0.99

@@ -48,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
     st.add_argument("--db", type=Path, default=DEFAULT_DB)
     st.add_argument("--theta", type=float, default=0.095, help="taker fee coefficient (Tier 1 = 0.095)")
     st.add_argument("--json", action="store_true")
+    cp = sub.add_parser("compare", help="compare strategy families per asset/horizon (walk-forward)")
+    cp.add_argument("--db", type=Path, default=DEFAULT_DB)
+    cp.add_argument("--theta", type=float, default=0.095)
+    cp.add_argument("--json", action="store_true")
     rep = sub.add_parser("report", help="summarize a recording")
     rep.add_argument("--db", type=Path, default=DEFAULT_DB)
     rep.add_argument("--max-ask", type=float, default=0.98)
@@ -86,6 +90,15 @@ def main(argv: list[str] | None = None) -> int:
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)
         return 1
+    if args.cmd == "compare":
+        import json
+        from .backfill import SCHEMA
+        from .strategies import compare, format_compare
+        conn = db.connect(args.db)
+        conn.executescript(SCHEMA)
+        res = compare(conn, theta=args.theta)
+        print(json.dumps(res, indent=2, default=str) if args.json else format_compare(res))
+        return 0
     if args.cmd == "study":
         import json
         from .backfill import SCHEMA
