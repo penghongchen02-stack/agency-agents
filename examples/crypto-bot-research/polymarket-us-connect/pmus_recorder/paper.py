@@ -1,7 +1,7 @@
 """Live PAPER trading: run all seven strategy bots forward on live public data. No orders, ever.
 
-Each bot follows the coin and window length where it did best in the 45-day walk-forward
-test (RESULTS-2026-11-20-all-strategies.md, 90 s price delay). It uses the same rules and
+Each bot trades all four coins; per coin it uses the window length where it did best in the
+45-day walk-forward test (RESULTS-2026-11-20-all-strategies.md, 90 s price delay). It uses the same rules and
 settings as the backtest, so live results can be compared with what the backtest predicted.
 
 Live public data (no API key):
@@ -49,15 +49,38 @@ class Bot:
     basis_bps: float = 0.0
 
 
-# Best coin/window per bot by test-period P&L (at least 30 trades), 45 days to 2026-11-20.
+# Every bot trades all four coins together. For each coin it uses the window length and
+# settings where that bot did best on that coin in the 45-day walk-forward test (test-period
+# P&L, at least 30 trades, 90 s price delay). backtest_ev = that test's EV per contract.
 BOTS = (
+    Bot("model_edge", "btc", "5m", {"offset": 60, "edge": 0.0}, +0.0266, k=10.0, basis_bps=2.0),
+    Bot("model_edge", "eth", "5m", {"offset": 60, "edge": 0.0}, +0.0472, k=12.0, basis_bps=1.0),
     Bot("model_edge", "sol", "5m", {"offset": 60, "edge": 0.0}, +0.0553, k=12.0, basis_bps=3.0),
+    Bot("model_edge", "xrp", "5m", {"offset": 60, "edge": 0.0}, +0.0227, k=12.0, basis_bps=0.0),
+    Bot("favourite", "btc", "5m", {"offset": 120, "margin_bps": 5, "max_price": 0.98}, +0.0117),
     Bot("favourite", "eth", "5m", {"offset": 60, "margin_bps": 5, "max_price": 0.95}, +0.0261),
+    Bot("favourite", "sol", "1h", {"offset": 120, "margin_bps": 5, "max_price": 0.98}, +0.0595),
+    Bot("favourite", "xrp", "1h", {"offset": 60, "margin_bps": 5, "max_price": 0.98}, +0.0593),
     Bot("disagreement", "btc", "5m", {"offset": 60, "margin_bps": 0, "min_price": 0.02}, +0.1909),
+    Bot("disagreement", "eth", "5m", {"offset": 60, "margin_bps": 0, "min_price": 0.02}, +0.1694),
+    Bot("disagreement", "sol", "5m", {"offset": 120, "margin_bps": 0, "min_price": 0.02}, +0.1062),
+    Bot("disagreement", "xrp", "5m", {"offset": 120, "margin_bps": 0, "min_price": 0.02}, +0.1585),
+    Bot("momentum", "btc", "1h", {"offset": 180, "lookback_min": 3, "rise": 0.1}, -0.0890),
     Bot("momentum", "eth", "15m", {"offset": 180, "lookback_min": 5, "rise": 0.3}, +0.0302),
+    Bot("momentum", "sol", "15m", {"offset": 180, "lookback_min": 5, "rise": 0.3}, -0.0550),
+    Bot("momentum", "xrp", "1h", {"offset": 120, "lookback_min": 2, "rise": 0.2}, -0.1923),
+    Bot("longshot", "btc", "1h", {"offset": 120, "max_price": 0.05}, -0.0060),
+    Bot("longshot", "eth", "1h", {"offset": 180, "max_price": 0.03}, -0.0171),
+    Bot("longshot", "sol", "1h", {"offset": 300, "max_price": 0.03}, -0.0177),
     Bot("longshot", "xrp", "15m", {"offset": 300, "max_price": 0.05}, +0.0027),
+    Bot("both_sides", "btc", "1h", {"entry": 0.3, "edge": 0.04}, -0.0204),
+    Bot("both_sides", "eth", "1h", {"entry": 0.3, "edge": 0.0}, -0.0499),
+    Bot("both_sides", "sol", "1h", {"entry": 0.3, "edge": 0.0}, -0.0401),
     Bot("both_sides", "xrp", "1h", {"entry": 0.3, "edge": 0.0}, -0.0143),
     Bot("neversmiling", "btc", "1h", {"tilt": 1}, -0.0179),
+    Bot("neversmiling", "eth", "1h", {"tilt": 1}, -0.1460),
+    Bot("neversmiling", "sol", "1h", {"tilt": 1}, -0.1383),
+    Bot("neversmiling", "xrp", "1h", {"tilt": 1}, -0.0862),
 )
 
 SCHEMA = """
@@ -338,18 +361,36 @@ def paper_report(conn: sqlite3.Connection, bots=BOTS) -> str:
                  f"({(first[1] - first[0]) / 3600:.1f} h)")
     L.append(f"\n  {'bot':12s} {'coin':9s} {'mkts':>5s} {'trades':>6s} {'open':>5s} {'win':>6s} {'px':>6s} "
              f"{'EV/ct':>8s} {'backtest':>9s} {'total':>8s}")
-    for b in bots:
-        mk = conn.execute("SELECT COUNT(*) FROM paper_markets WHERE asset=? AND horizon=? AND settled=1",
-                          (b.asset, b.horizon)).fetchone()[0]
-        rows = conn.execute("SELECT price, contracts, pnl FROM paper_trades WHERE bot=?", (b.name,)).fetchall()
-        done = [r for r in rows if r[2] is not None]
-        c = sum(r[1] for r in done)
-        tot = sum(r[2] for r in done)
-        win = sum(1 for r in done if r[2] > 0) / len(done) if done else 0
-        px = sum(r[0] * r[1] for r in done) / c if c else 0
+
+    def line(label, coin, group):
+        mk = trades = open_ = 0
+        c = tot = wins = paid = 0.0
+        for b in group:
+            mk += conn.execute("SELECT COUNT(*) FROM paper_markets WHERE asset=? AND horizon=? AND settled=1",
+                               (b.asset, b.horizon)).fetchone()[0]
+            rows = conn.execute("SELECT t.price, t.contracts, t.pnl FROM paper_trades t JOIN paper_markets m "
+                                "ON m.slug = t.slug WHERE t.bot=? AND m.asset=? AND m.horizon=?",
+                                (b.name, b.asset, b.horizon)).fetchall()
+            done = [r for r in rows if r[2] is not None]
+            trades += len(done)
+            open_ += len(rows) - len(done)
+            c += sum(r[1] for r in done)
+            tot += sum(r[2] for r in done)
+            wins += sum(1 for r in done if r[2] > 0)
+            paid += sum(r[0] * r[1] for r in done)
+        bt = sum(b.backtest_ev for b in group) / len(group)
         ev = f"{tot / c:+8.4f}" if c else f"{'-':>8s}"
-        L.append(f"  {b.name:12s} {b.asset.upper() + ' ' + b.horizon:9s} {mk:>5d} {len(done):>6d} "
-                 f"{len(rows) - len(done):>5d} {win:>6.1%} {px:>6.3f} {ev} {b.backtest_ev:>+9.4f} {tot:>+8.2f}")
+        win = wins / trades if trades else 0
+        L.append(f"  {label:12s} {coin:9s} {mk:>5d} {trades:>6d} {open_:>5d} {win:>6.1%} "
+                 f"{paid / c if c else 0:>6.3f} {ev} {bt:>+9.4f} {tot:>+8.2f}")
+
+    names = list(dict.fromkeys(b.name for b in bots))
+    for name in names:
+        group = [b for b in bots if b.name == name]
+        line(name, "ALL", group)
+        if len(group) > 1:
+            for b in group:
+                line("", f"{b.asset.upper()} {b.horizon}", [b])
     lag = conn.execute("SELECT AVG(index_age_s), MAX(index_age_s), COUNT(*) FROM paper_decisions "
                        "WHERE index_age_s IS NOT NULL").fetchone()
     if lag[2]:
@@ -358,7 +399,8 @@ def paper_report(conn: sqlite3.Connection, bots=BOTS) -> str:
     q = conn.execute("SELECT AVG(latency_ms), COUNT(*) FROM paper_quotes").fetchone()
     if q[1]:
         L.append(f"Quotes polled: {q[1]}, avg latency {q[0]:.0f} ms.")
-    L.append("\nmkts = settled markets on that bot's coin/window; trades = settled buys; open = awaiting settlement;\n"
+    L.append("\nALL = the bot's four coins together (backtest = their average); mkts = settled markets;\n"
+             "trades = settled buys; open = awaiting settlement;\n"
              "EV/ct = P&L per contract after the Tier 1 taker fee; backtest = what the 45-day test predicted.\n"
              "Fills are assumed at the quoted price with unknown size: an upper bound. Many weeks of\n"
              "trades are needed before a difference of a few cents per contract means anything.")

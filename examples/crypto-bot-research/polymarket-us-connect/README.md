@@ -146,17 +146,19 @@ python -m pmus_recorder compare --price-delay 75     # check how much the result
 
 ### Live paper trading: `paper` + `paper-report` (no key, no orders)
 
-This runs all seven strategy bots forward on live data. Each bot trades only its **best coin and window** from the 45-day test. The rules and settings are the same as in the backtest, so live results show whether the backtest holds.
+This runs all seven strategy bots forward on live data. **Each bot trades all four coins together** (BTC, ETH, SOL and XRP), which makes 28 bot-coin pairs. For each coin, a bot uses the window length and settings where it did best on that coin in the 45-day test. The rules are the same as in the backtest, so live results show whether the backtest holds.
 
-| Bot | Coin / window | Backtest EV per contract |
-|---|---|---|
-| model_edge | SOL 5m | +5.5¢ |
-| favourite | ETH 5m | +2.6¢ |
-| disagreement | BTC 5m | +19¢ (suspect: stale quotes) |
-| momentum | ETH 15m | +3.0¢ |
-| longshot | XRP 15m | +0.3¢ |
-| both_sides | XRP 1h | −1.4¢ (least bad) |
-| neversmiling | BTC 1h | −1.8¢ (least bad) |
+| Bot | BTC | ETH | SOL | XRP | Backtest EV per contract (avg of 4 coins) |
+|---|---|---|---|---|---|
+| model_edge | 5m | 5m | 5m | 5m | +3.8¢ |
+| favourite | 5m | 5m | 1h | 1h | +3.9¢ |
+| disagreement | 5m | 5m | 5m | 5m | +15.6¢ (suspect: stale quotes) |
+| momentum | 1h | 15m | 15m | 1h | −7.7¢ |
+| longshot | 1h | 1h | 1h | 15m | −1.0¢ |
+| both_sides | 1h | 1h | 1h | 1h | −3.1¢ |
+| neversmiling | 1h | 1h | 1h | 1h | −9.7¢ |
+
+`paper-report` shows each bot with all coins combined, then each coin separately.
 
 ```bash
 nohup python -m pmus_recorder paper > paper.log 2>&1 &      # runs until stopped; resumes after restart
