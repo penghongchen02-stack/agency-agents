@@ -212,8 +212,13 @@ def arb_report(conn) -> str:
     n, settled, pnl, cost, zero, gap, qty, t0, t1 = rows
     if not n:
         return "Cross-window arbitrage paper test: no pairs yet."
+    from .bankroll import replay
+    b = replay([(ts, we + 60, cost, pnl, "arb") for ts, we, cost, pnl in conn.execute(
+        "SELECT ts, window_end, cost, pnl FROM arb_trades WHERE pnl IS NOT NULL")], start=1000.0, cap=50)
     hours = max((t1 - t0) / 3600, 1e-9)
     return (f"Once per pair: {first[0] or 0} settled pairs, P&L {first[1] or 0:+.2f}. "
             f"Every cheap minute (arb_repeat): {n} pair buys ({settled or 0} settled), P&L {pnl or 0:+.2f} per "
             f"contract pair, avg cost {cost:.3f}, pairs that paid 0: {zero or 0}, avg time between leg quotes "
-            f"{gap:.1f} s, avg smaller-leg book size {qty or 0:.0f} contracts, over {hours:.1f} h.")
+            f"{gap:.1f} s, avg smaller-leg book size {qty or 0:.0f} contracts, over {hours:.1f} h. "
+            f"Starting with $1,000 (up to 50 pairs, 10% of the balance per buy): ${b['end']:,.2f} "
+            f"after {b['trades']} buys.")

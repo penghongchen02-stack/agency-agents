@@ -71,12 +71,14 @@ def _candidate(family, seg, rule, z, am, ap, m, mp, span):
         res[tag] = {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
                     "z": _z(p, a["q"][sel]) if len(p) else 0.0, "losses": int((p < 0).sum()),
                     "per_day": float(p.sum() / span["hold"]) if span["hold"] > 0 else 0.0,
-                    "_pnl": p, "_day": a["day"][sel]}
+                    "_pnl": p, "_day": a["day"][sel], "_entry": a["t_end"][sel] - a["offset"][sel],
+                    "_end": a["t_end"][sel] + 60, "_cost": a["q"][sel], "_kind": "bet"}
     sel = m & am["per"]["fwd"]
     p = am["pnl"][sel]
     res["forward"] = {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
                       "per_day": float(p.sum() / span["forward"]) if span["forward"] > 0 else 0.0,
-                      "_pnl": p, "_day": am["day"][sel]}
+                      "_pnl": p, "_day": am["day"][sel], "_entry": am["t_end"][sel] - am["offset"][sel],
+                    "_end": am["t_end"][sel] + 60, "_cost": am["q"][sel], "_kind": "bet"}
     return res
 
 
@@ -180,6 +182,8 @@ def _arb(ctx, repeat):
     t_end = np.array([t["t_end"] for t in tr])
     pnl = np.array([t["pnl"] for t in tr])
     pay = np.array([t["pay"] for t in tr])
+    entry = np.array([t["t"] for t in tr])
+    cost = np.array([t["cost"] for t in tr])
     day = t_end // 86400
     zero = int((pay < 1).sum())
     per = {"dev": t_end < state["cut_b"], "hold": (t_end >= state["cut_b"]) & (t_end <= state["freeze"]),
@@ -189,7 +193,8 @@ def _arb(ctx, repeat):
         p = pnl[sel]
         return {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
                 "z": 99.0 if len(p) and zero == 0 else 0.0, "losses": int((p < 0).sum()),
-                "per_day": float(p.sum() / days) if days > 0 else 0.0, "_pnl": p, "_day": day[sel]}
+                "per_day": float(p.sum() / days) if days > 0 else 0.0, "_pnl": p, "_day": day[sel],
+                "_entry": entry[sel], "_end": t_end[sel] + 60, "_cost": cost[sel], "_kind": "arb"}
     hold = part(per["hold"], span["hold"])
     rule = ("buy Up on the lower-open market and Down on the higher-open market of the same coin closing at "
             "the same instant (opens >= $0.01 apart) when both cost < $1 with fees"

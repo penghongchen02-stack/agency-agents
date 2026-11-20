@@ -146,3 +146,14 @@ def test_arb_paper_records_and_settles_pairs():
     pay, pnl = ap.conn.execute("SELECT pay, pnl FROM arb_trades").fetchone()
     assert pay == 2.0 and pnl > 1.0                       # close between the opens: both legs win
     assert "pair" in arb_report(ap.conn)
+
+
+def test_bankroll_shares_money_and_caps_size():
+    from pmus_recorder.bankroll import replay
+    # two bets open at once at $0.90: 5% of $1,000 = $50 -> 55 contracts, capped at 50
+    r = replay([(0, 100, 0.90, 0.10, "bet"), (10, 100, 0.90, 0.10, "bet")], start=1000, cap=50)
+    assert r["trades"] == 2 and r["avg_contracts"] == 50 and abs(r["end"] - 1010) < 1e-9
+    # a tiny bankroll cannot afford a contract worth more than 5% of it
+    assert replay([(0, 100, 0.90, 0.10, "bet")], start=10)["skipped"] == 1
+    # a loss takes the whole stake
+    assert abs(replay([(0, 100, 0.90, -0.90, "bet")], start=1000, cap=50)["end"] - 955) < 1e-9

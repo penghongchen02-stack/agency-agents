@@ -81,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     hu.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "hunt")
     hu.add_argument("--cap", type=int, default=50, help="max contracts per trade")
     hu.add_argument("--target", type=float, default=100.0, help="dollars per day")
+    hu.add_argument("--bankroll", type=float, default=1000.0, help="starting money in dollars")
     hu.add_argument("--interval", type=float, default=3600, help="seconds between rounds")
     hu.add_argument("--rounds", type=int, help="stop after this many rounds")
     hu.add_argument("--keep-going", action="store_true", help="keep hunting after the target is met")
@@ -146,7 +147,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "hunt":
         from .hunt import run_hunt
         run_hunt(args.db, args.out, cap=args.cap, target=args.target, interval=args.interval,
-                 keep_going=args.keep_going, max_rounds=args.rounds, log=lambda s: print(s, flush=True))
+                 keep_going=args.keep_going, max_rounds=args.rounds, log=lambda s: print(s, flush=True),
+                 bankroll=args.bankroll)
         return 0
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)

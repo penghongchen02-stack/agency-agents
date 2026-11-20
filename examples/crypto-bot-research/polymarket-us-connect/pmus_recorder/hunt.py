@@ -161,12 +161,14 @@ def hunt_round(conn, state, theta=0.095, min_trades=100, alpha=0.05, delays=(60,
             res[tag] = {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
                         "z": _z(p, a["q"][sel]) if len(p) else 0.0, "losses": int((p < 0).sum()),
                         "per_day": float(p.sum() / span["hold"]) if span["hold"] > 0 else 0.0,
-                        "_pnl": p, "_day": a["day"][sel]}
+                        "_pnl": p, "_day": a["day"][sel], "_entry": a["t_end"][sel] - a["offset"][sel],
+                    "_end": a["t_end"][sel] + 60, "_cost": a["q"][sel], "_kind": "bet"}
         sel = m & am["per"]["fwd"]
         p = am["pnl"][sel]
         res["forward"] = {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
                           "per_day": float(p.sum() / span["forward"]) if span["forward"] > 0 else 0.0,
-                          "_pnl": p, "_day": am["day"][sel]}
+                          "_pnl": p, "_day": am["day"][sel], "_entry": am["t_end"][sel] - am["offset"][sel],
+                    "_end": am["t_end"][sel] + 60, "_cost": am["q"][sel], "_kind": "bet"}
         cands.append(res)
     ctx = {"conn": conn, "data": data, "delays": delays, "state": state, "theta": theta, "span": span, "bar": bar}
     for f in tested:
@@ -176,7 +178,17 @@ def hunt_round(conn, state, theta=0.095, min_trades=100, alpha=0.05, delays=(60,
             "families": tested, "new_family": new}
 
 
-def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
+def _trades(cands, key):
+    out = []
+    for c in cands:
+        part = c[key]
+        if part.get("n"):
+            out += [(float(e), float(s), float(k), float(p), part["_kind"])
+                    for e, s, k, p in zip(part["_entry"], part["_end"], part["_cost"], part["_pnl"])]
+    return out
+
+
+def evaluate_request(res, cap=50, target=100.0, min_forward_days=3, bankroll=1000.0):
     conf = [c for c in res["candidates"]
             if c["hold"]["n"] and c["hold"]["ev"] > 0 and c["hold_pess"]["n"] and c["hold_pess"]["ev"] > 0
             and c["hold"]["z"] >= 2.0]
@@ -189,11 +201,19 @@ def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
         pnl = np.concatenate([c[key]["_pnl"] for c in conf]) if conf else np.array([])
         days = np.concatenate([c[key]["_day"] for c in conf]) if conf else np.array([])
         return _daily(pnl, days, cap)
+    from .bankroll import replay
     hold, fwd = port("hold"), port("forward")
-    met = (bool(conf) and hold.get("days", 0) > 0 and hold["mean"] >= target and hold["positive_days"] >= 0.6
-           and fwd.get("days", 0) >= min_forward_days and fwd["mean"] >= target and fwd["positive_days"] >= 0.6)
+    # the request: starting from `bankroll` dollars, sized by what is actually in the account
+    bank_hold = replay(_trades(conf, "hold"), start=bankroll, cap=cap)
+    bank_fwd = replay(_trades(conf, "forward"), start=bankroll, cap=cap)
+    for c in ranked:
+        c["bank_hold"] = replay(_trades([c], "hold"), start=bankroll, cap=cap)
+    met = (bool(conf) and bank_hold["days"] > 0 and bank_hold["per_day"] >= target and bank_hold["positive_days"] >= 0.6
+           and bank_fwd["days"] >= min_forward_days and bank_fwd["per_day"] >= target
+           and bank_fwd["positive_days"] >= 0.6)
     return {"met": met, "confirmed": conf, "ranked": ranked[:5], "portfolio_hold": hold,
-            "portfolio_forward": fwd, "cap": cap, "target": target, "min_forward_days": min_forward_days}
+            "portfolio_forward": fwd, "bank_hold": bank_hold, "bank_forward": bank_fwd, "bankroll": bankroll,
+            "cap": cap, "target": target, "min_forward_days": min_forward_days}
 
 
 def _cfg_text(c):
@@ -208,7 +228,8 @@ def _cfg_text(c):
 
 def leaderboard(res, ev, round_no, stamp) -> str:
     L = [f"# Bot hunt leaderboard (round {round_no}, {stamp})", "",
-         f"Target: at least ${ev['target']:.0f}/day with at most {ev['cap']} contracts per trade, on the holdout "
+         f"Target: starting with ${ev['bankroll']:,.0f}, at least ${ev['target']:.0f}/day (at most {ev['cap']} contracts "
+         f"per trade, 5% of the balance per bet, 10% per arbitrage pair), on the holdout "
          f"and on at least {ev['min_forward_days']} new forward days. "
          f"**Met: {'YES' if ev['met'] else 'not yet'}.**", "",
          f"Variations tested: {res['n_tests']:,}. Luck bar: dev z >= {res['bar']:.2f}. "
@@ -216,23 +237,25 @@ def leaderboard(res, ev, round_no, stamp) -> str:
          f"Bot families tested so far: {', '.join(['base grid'] + res.get('families', []))}"
          + (f" (new this round: {res['new_family']})." if res.get("new_family") else "."), "",
          "| Rank | Coin / window | Bot family | Rule | Holdout trades | Losses | Profit / contract | $/day at 1 contract | "
-         f"$/day at {ev['cap']} | Forward $/day at {ev['cap']} | Confirmed |",
+         f"$/day from ${ev['bankroll']:,.0f} alone | Avg contracts | Confirmed |",
          "|---|---|---|---|---|---|---|---|---|---|---|"]
     conf = {id(c) for c in ev["confirmed"]}
     for i, c in enumerate(ev["ranked"], 1):
         h, f = c["hold"], c["forward"]
         L.append(f"| {i} | {c['segment']} | {c.get('family', 'base grid')} | {_cfg_text(c['config'])} | {h['n']} | {h['losses']} | "
-                 f"{(h['ev'] or 0) * 100:+.1f}¢ | ${h['per_day']:.2f} | ${h['per_day'] * ev['cap']:.0f} | "
-                 f"{'$%.0f' % (f['per_day'] * ev['cap']) if f['n'] else 'no data yet'} | "
-                 f"{'yes' if id(c) in conf else 'no'} |")
+                 f"{(h['ev'] or 0) * 100:+.1f}¢ | ${h['per_day']:.2f} | ${c['bank_hold']['per_day']:.0f} | "
+                 f"{c['bank_hold']['avg_contracts']:.0f} | {'yes' if id(c) in conf else 'no'} |")
     if not ev["ranked"]:
         L.append("| - | - | - | no variation passed the luck checks | | | | | | | |")
-    ph, pf = ev["portfolio_hold"], ev["portfolio_forward"]
-    L += ["", f"**All confirmed winners together at {ev['cap']} contracts per trade:**"]
-    L.append(f"- Holdout: ${ph['mean']:.0f}/day, worst day ${ph['worst']:.0f}, {ph['positive_days']:.0%} of "
-             f"{ph['days']} days positive." if ph.get("days") else "- Holdout: none.")
-    L.append(f"- Forward: ${pf['mean']:.0f}/day, worst day ${pf['worst']:.0f}, {pf['positive_days']:.0%} of "
-             f"{pf['days']} days positive." if pf.get("days") else
+    bh, bf = ev["bank_hold"], ev["bank_forward"]
+    L += ["", f"**All confirmed winners together, starting with ${ev['bankroll']:,.0f} (money shared, winnings reinvested):**"]
+    L.append(f"- Holdout: ${bh['start']:,.0f} -> ${bh['end']:,.0f} in {bh['days']} days, ${bh['per_day']:.0f}/day, "
+             f"worst day ${bh['worst_day']:.0f}, {bh['positive_days']:.0%} of days positive, max drawdown "
+             f"${-bh['max_drawdown']:.0f}; {bh['trades']} trades, avg {bh['avg_contracts']:.0f} contracts, "
+             f"{bh['size_limited']} trades sized down by the balance, {bh['skipped']} skipped for lack of cash."
+             if bh["days"] else "- Holdout: none.")
+    L.append(f"- Forward: ${bf['start']:,.0f} -> ${bf['end']:,.0f} in {bf['days']} days, ${bf['per_day']:.0f}/day, "
+             f"{bf['positive_days']:.0%} of days positive." if bf["days"] else
              f"- Forward: no new days yet (need {ev['min_forward_days']}).")
     L += ["", "Display prices carry no size: fills at that size are assumed, not proven. Not financial advice."]
     return "\n".join(L)
@@ -249,7 +272,7 @@ def _clean(o):
 
 
 def run_hunt(db_path: Path, out_dir: Path, cap=50, target=100.0, interval=3600, keep_going=False,
-             max_rounds=None, log=print):
+             max_rounds=None, log=print, bankroll=1000.0):
     from . import db as dbm
     from .backfill import SCHEMA, Backfill
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -264,7 +287,7 @@ def run_hunt(db_path: Path, out_dir: Path, cap=50, target=100.0, interval=3600, 
         except Exception as exc:               # keep hunting on the data we have
             log(f"backfill failed: {exc}")
         res = hunt_round(conn, state)
-        ev = evaluate_request(res, cap=cap, target=target)
+        ev = evaluate_request(res, cap=cap, target=target, bankroll=bankroll)
         state["rounds"] += 1
         added = state.setdefault("added", {})
         conf_ids = {id(c) for c in ev["confirmed"]}
@@ -283,9 +306,9 @@ def run_hunt(db_path: Path, out_dir: Path, cap=50, target=100.0, interval=3600, 
         state_f.write_text(json.dumps(state, indent=1))
         with open(out_dir / "history.log", "a") as h:
             ph, pf = ev["portfolio_hold"], ev["portfolio_forward"]
-            h.write(f"{stamp} round {state['rounds']} winners {len(ev['confirmed'])} "
-                    f"hold ${ph.get('mean', 0):.0f}/day fwd ${pf.get('mean', 0):.0f}/day "
-                    f"({pf.get('days', 0)} days) met={ev['met']}\n")
+            h.write(f"{stamp} round {state['rounds']} winners {len(ev['confirmed'])} from ${ev['bankroll']:,.0f}: "
+                    f"hold ${ev['bank_hold']['per_day']:.0f}/day fwd ${ev['bank_forward']['per_day']:.0f}/day "
+                    f"({ev['bank_forward']['days']} days) met={ev['met']}\n")
         log(md)
         conn.close()
         if (ev["met"] and not keep_going) or (max_rounds and state["rounds"] >= max_rounds):

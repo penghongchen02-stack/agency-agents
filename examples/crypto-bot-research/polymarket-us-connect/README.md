@@ -173,6 +173,13 @@ See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md).
 - **45-day backtest:** 0 losing pairs. Dev made $1.05/day per contract pair; the holdout made $1.15/day, with every day profitable.
 - **Live check:** `python -m pmus_recorder arb-paper` paper-tests it on live quotes and logs book sizes. `arb-report` summarizes the results.
 
+**Starting money: $1,000** (`pmus_recorder/bankroll.py`). Every result in the hunt and in the paper reports is replayed from a $1,000 account:
+- stakes are locked until settlement, so positions open at the same time share the money
+- each bet is at most 5% of the balance, each arbitrage buy at most 10%, and each trade at most 50 contracts
+- winnings are reinvested
+
+`hunt --bankroll` changes the starting amount.
+
 **Automatic hunt** (`python -m pmus_recorder hunt`). Every hour it backfills new markets and searches 3,991,680 variations under one Bonferroni bar, plus the arbitrage family. It ranks the top 5 in `data/hunt/leaderboard.md`, and stops when the confirmed winners make ≥ $100/day at ≤ 50 contracts on the holdout **and** on ≥ 3 new forward days.
 
 **New variants, running beside the originals.** Each one is built from a bot that lost and targets the reason it lost (`pmus_recorder/strategies_variants.py`). They are tested the same way, appear in `compare`, and each trades all four coins:

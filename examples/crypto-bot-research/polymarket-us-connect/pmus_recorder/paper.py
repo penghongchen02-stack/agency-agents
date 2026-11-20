@@ -458,6 +458,15 @@ def paper_report(conn: sqlite3.Connection, bots=BOTS) -> str:
         if len(group) > 1:
             for b in group:
                 line("", f"{b.asset.upper()} {b.horizon}", [b])
+    from .bankroll import replay
+    names = sorted({b.name for b in bots})
+    q = ",".join("?" * len(names))
+    trades = [(dec, we + 60, price + fee / c, pnl / c, "bet") for dec, we, price, fee, c, pnl in conn.execute(
+        f"SELECT t.decided_at, m.window_end, t.price, t.fee, t.contracts, t.pnl FROM paper_trades t "
+        f"JOIN paper_markets m ON m.slug = t.slug WHERE t.pnl IS NOT NULL AND t.bot IN ({q})", names) if c]
+    bk = replay(trades, start=1000.0, cap=50)
+    L.append(f"\nStarting with $1,000 for these bots together (up to 50 contracts, 5% of the balance per bet): "
+             f"${bk['end']:,.2f} after {bk['trades']} settled trades ({bk['skipped']} skipped for lack of cash).")
     lag = conn.execute("SELECT AVG(index_age_s), MAX(index_age_s), COUNT(*) FROM paper_decisions "
                        "WHERE index_age_s IS NOT NULL").fetchone()
     if lag[2]:
