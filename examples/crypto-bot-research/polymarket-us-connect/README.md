@@ -144,6 +144,33 @@ python -m pmus_recorder compare                      # all 7 families, walk-forw
 python -m pmus_recorder compare --price-delay 75     # check how much the result depends on timing
 ```
 
+### Live paper trading: `paper` + `paper-report` (no key, no orders)
+
+This runs all seven strategy bots forward on live data. Each bot trades only its **best coin and window** from the 45-day test. The rules and settings are the same as in the backtest, so live results show whether the backtest holds.
+
+| Bot | Coin / window | Backtest EV per contract |
+|---|---|---|
+| model_edge | SOL 5m | +5.5¢ |
+| favourite | ETH 5m | +2.6¢ |
+| disagreement | BTC 5m | +19¢ (suspect: stale quotes) |
+| momentum | ETH 15m | +3.0¢ |
+| longshot | XRP 15m | +0.3¢ |
+| both_sides | XRP 1h | −1.4¢ (least bad) |
+| neversmiling | BTC 1h | −1.8¢ (least bad) |
+
+```bash
+nohup python -m pmus_recorder paper > paper.log 2>&1 &      # runs until stopped; resumes after restart
+python -m pmus_recorder paper-report                         # per-bot results vs the backtest
+```
+
+**Where the live prices come from:**
+- **Quotes:** `GET /v1/market/slug/{slug}`. Its `bestBidQuote` and `bestAskQuote` update every 1–2 s, unlike the CDN-cached `/book` and `/bbo`. In a check, the quote changed 50 times in 80 s; the cached BBO changed 3 times.
+- **Settlement index:** published about 2 s behind real time.
+
+**What gets recorded:** every buy, the live index lag at each decision, and every settlement, all in `data/paper.sqlite`. Fills are assumed at the quoted price with unknown size, so treat the results as an upper bound.
+
+**How long to run it:** about 2 weeks on an always-on machine. That gives roughly 4,000 decisions per 5-minute bot, and 300 per 1-hour bot.
+
 ### What the first live test run found (2026-11-20, 25 min, BTC + ETH, 5m/15m/1h)
 
 - **The public order book is cached up to 30 s.** It returned `cache-control: public, max-age=30` with the `Age` header counting up, and recorded snapshots were on average 14 s old (max 29 s). A last-two-minutes strategy **needs the authenticated websocket**.

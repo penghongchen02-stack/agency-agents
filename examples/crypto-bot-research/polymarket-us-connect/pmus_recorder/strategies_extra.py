@@ -57,70 +57,86 @@ def _at(m, now, tolerance=60):
     return study.decision_point(m["pts"], now, tolerance)
 
 
-def simulate_both_sides(m, params, theta):
+# Each legs_* function is causal: it reads the price points in time order and returns the
+# buys it would have made, as (ts, side_up, price, contracts). It never looks at the outcome,
+# so the live paper trader (paper.py) runs the same functions on the data seen so far.
+
+def legs_both_sides(m, params, theta):
     entry, edge = params["entry"], params["edge"]
-    legs = []                                   # (side_up, price)
+    legs = []
     for ts, up, down in m["pts"]:
         if ts < m["ws"] or ts > m["t_end"] - 30:
             continue
         if not legs:
             for side_up, p in ((True, up), (False, down)):
                 if _ok(p) and p <= entry:
-                    legs.append((side_up, p))
+                    legs.append((ts, side_up, p, 1))
                     break
         else:
-            first_up, p1 = legs[0]
+            _, first_up, p1, _ = legs[0]
             p2 = down if first_up else up
             cost = p1 + p2 + taker_fee(p1, theta=theta) + taker_fee(p2, theta=theta)
             if _ok(p2) and cost <= 1 - edge:
-                legs.append((not first_up, p2))
+                legs.append((ts, not first_up, p2, 1))
                 break
-    if not legs:
-        return None
-    pnl = sum(_payout(s, m) - p - taker_fee(p, theta=theta) for s, p in legs)
-    return len(legs), pnl, sum(p for _, p in legs) / len(legs)
+    return legs
 
 
-def simulate_longshot(m, params, theta):
+def legs_longshot(m, params, theta):
     pt = _at(m, m["t_end"] - params["offset"])
     if not pt:
-        return None
-    _, up, down = pt
-    legs = [(s, p) for s, p in ((True, up), (False, down)) if _ok(p) and 0.01 <= p <= params["max_price"]]
-    if not legs:
-        return None
-    pnl = sum(_payout(s, m) - p - taker_fee(p, theta=theta) for s, p in legs)
-    return len(legs), pnl, sum(p for _, p in legs) / len(legs)
+        return []
+    ts, up, down = pt
+    return [(ts, s, p, 1) for s, p in ((True, up), (False, down))
+            if _ok(p) and 0.01 <= p <= params["max_price"]]
 
 
-def simulate_momentum(m, params, theta):
+def legs_momentum(m, params, theta):
     now = m["t_end"] - params["offset"]
     cur, past = _at(m, now), _at(m, now - 60 * params["lookback_min"])
     if not cur or not past:
-        return None
+        return []
     for side_up, idx in ((True, 1), (False, 2)):
         p, p0 = cur[idx], past[idx]
         if p - p0 >= params["rise"] and 0.50 <= p <= 0.98 and _ok(p):
-            return 1, _payout(side_up, m) - p - taker_fee(p, theta=theta), p
-    return None
+            return [(cur[0], side_up, p, 1)]
+    return []
 
 
-def simulate_neversmiling(m, params, theta):
+def legs_neversmiling(m, params, theta):
     span = m["t_end"] - m["ws"]
     lo_t, hi_t = m["ws"] + 0.10 * span, m["ws"] + 0.90 * span
-    contracts, pnl, paid = 0, 0.0, 0.0
+    legs = []
     for ts, up, down in m["pts"]:
-        if not (lo_t <= ts <= hi_t):
-            continue
-        for side_up, p in ((True, up), (False, down)):
-            if _ok(p) and 0.30 <= p <= 0.70:
-                q = params["tilt"] if p >= 0.50 else 1
-                contracts += q
-                paid += q * p
-                pnl += q * (_payout(side_up, m) - p - taker_fee(p, theta=theta))
-    if not contracts:
+        if lo_t <= ts <= hi_t:
+            for side_up, p in ((True, up), (False, down)):
+                if _ok(p) and 0.30 <= p <= 0.70:
+                    legs.append((ts, side_up, p, params["tilt"] if p >= 0.50 else 1))
+    return legs
+
+
+def settle_legs(legs, won_up: bool, theta):
+    """(contracts, total_pnl, avg_price) or None, holding every leg to settlement."""
+    if not legs:
         return None
-    return contracts, pnl, paid / contracts
+    contracts = sum(q for *_, q in legs)
+    pnl = sum(q * ((1.0 if s == won_up else 0.0) - p - taker_fee(p, theta=theta)) for _, s, p, q in legs)
+    return contracts, pnl, sum(q * p for _, _, p, q in legs) / contracts
+
+
+def _simulator(legs_fn):
+    def sim(m, params, theta):
+        return settle_legs(legs_fn(m, params, theta), m["won_up"], theta)
+    return sim
+
+
+simulate_both_sides = _simulator(legs_both_sides)
+simulate_longshot = _simulator(legs_longshot)
+simulate_momentum = _simulator(legs_momentum)
+simulate_neversmiling = _simulator(legs_neversmiling)
+
+LEGS = {"both_sides": legs_both_sides, "longshot": legs_longshot,
+        "momentum": legs_momentum, "neversmiling": legs_neversmiling}
 
 
 FAMILIES = {

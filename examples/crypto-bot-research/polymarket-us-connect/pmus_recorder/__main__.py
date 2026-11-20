@@ -56,6 +56,12 @@ def main(argv: list[str] | None = None) -> int:
                     help="seconds a /v1/price-history point lags its timestamp (measured: 90)")
     cp.add_argument("--theta", type=float, default=0.095)
     cp.add_argument("--json", action="store_true")
+    pp = sub.add_parser("paper", help="paper-trade the 7 bots live on their best coin/window (no orders)")
+    pp.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
+    pp.add_argument("--duration", type=float, help="seconds to run (default: until Ctrl-C)")
+    pp.add_argument("--quote-s", type=float, default=3.0, help="seconds between quote polls per market")
+    pr = sub.add_parser("paper-report", help="paper-trading results per bot vs the backtest")
+    pr.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
     rep = sub.add_parser("report", help="summarize a recording")
     rep.add_argument("--db", type=Path, default=DEFAULT_DB)
     rep.add_argument("--max-ask", type=float, default=0.98)
@@ -91,6 +97,14 @@ def main(argv: list[str] | None = None) -> int:
                      workers=args.workers)
         print(f"Done: {b.run()}")
         return 0
+    if args.cmd == "paper":
+        from .paper import PaperTrader
+        args.db.parent.mkdir(parents=True, exist_ok=True)
+        conn = db.connect(args.db)
+        print(f"Paper trading into {args.db} (no orders are ever sent; Ctrl-C to stop)", flush=True)
+        stats = PaperTrader(conn, quote_s=args.quote_s, log=lambda s: print(s, flush=True)).run(args.duration)
+        print(f"Stopped: {stats}")
+        return 0
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)
         return 1
@@ -114,6 +128,10 @@ def main(argv: list[str] | None = None) -> int:
         conn.executescript(SCHEMA)
         res = run_study(conn, theta=args.theta)
         print(json.dumps(res, indent=2, default=str) if args.json else format_study(res))
+        return 0
+    if args.cmd == "paper-report":
+        from .paper import paper_report
+        print(paper_report(db.connect(args.db)))
         return 0
     rep_ = build_report(db.connect(args.db), max_ask=args.max_ask)
     print(to_json(rep_) if args.json else format_report(rep_))
