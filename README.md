@@ -447,6 +447,12 @@ Accounting, financial analysis, tax strategy, and investment research specialist
 | 📈 [FP&A Analyst](finance/finance-fpa-analyst.md) | Budgeting, rolling forecasts, variance analysis, business reviews | Annual operating plans, monthly business reviews, strategic resource allocation |
 | 🔍 [Investment Researcher](finance/finance-investment-researcher.md) | Due diligence, portfolio analysis, asset valuation, equity research | Investment thesis development, risk assessment, market research |
 | 🏛️ [Tax Strategist](finance/finance-tax-strategist.md) | Tax optimization, multi-jurisdictional compliance, transfer pricing | Entity structuring, ETR analysis, audit defense, strategic tax planning |
+| 🔬 [Prediction Market Wallet Forensics Analyst](finance/finance-prediction-market-wallet-forensics-analyst.md) | On-chain reverse-engineering of Polymarket wallets and bots | Decomposing a bot's P&L into spread, tilt, and rewards before copying a strategy |
+| ⚖️ [Crypto Up/Down Spread-Capture Strategist](finance/finance-crypto-updown-spread-capture-strategist.md) | Both-sides paired-cost books on BTC/ETH/SOL/XRP 5m–1h markets | Designing, gating, and kill-switching market-making plus tilt strategies |
+| ⚡ [Crypto Up/Down Latency & Late-Window Strategist](finance/finance-crypto-updown-latency-strategist.md) | Spot-to-CLOB latency, near-certainty sweeps, penny-floor harvesting | Judging whether your stack can win the race, and capping tail risk |
+| 🚀 [Token Launch Event Market Strategist](finance/finance-token-launch-event-market-strategist.md) | FDV threshold ladders, public-sale and launch-date markets | Tokenomics-driven event trading with correlated-ladder sizing |
+
+> 📚 Research behind the four agents above: [every crypto-trading bot in the PR&R trader reports](examples/research-polymarket-crypto-trading-bots.md).
 
 ### 🎮 Game Development Division
 
