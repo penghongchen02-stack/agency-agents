@@ -36,14 +36,20 @@ def build_report(conn, max_ask: float = 0.98, theta: float = 0.095) -> dict:
     cov["markets_settled"] = sum(1 for m in markets if m[8])
     cov["book_snapshots"] = conn.execute("SELECT COUNT(*) FROM book_snapshots").fetchone()[0]
     cov["index_ticks"] = conn.execute("SELECT COUNT(*) FROM index_ticks").fetchone()[0]
+    by_src = dict(conn.execute("SELECT COALESCE(source,'rest'), COUNT(*) FROM book_snapshots GROUP BY 1"))
+    cov["book_snapshots_live_ws"] = by_src.get("ws", 0)
+    cov["book_snapshots_rest_cached"] = by_src.get("rest", 0)
     cov["trades"] = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
     cov["errors"] = conn.execute("SELECT COUNT(*) FROM events WHERE level='ERROR'").fetchone()[0]
     cov["median_book_latency_ms"] = conn.execute(
-        "SELECT latency_ms FROM book_snapshots ORDER BY latency_ms LIMIT 1 OFFSET "
-        "(SELECT COUNT(*)/2 FROM book_snapshots)").fetchone()
+        "SELECT latency_ms FROM book_snapshots WHERE latency_ms IS NOT NULL ORDER BY latency_ms LIMIT 1 "
+        "OFFSET (SELECT COUNT(*)/2 FROM book_snapshots WHERE latency_ms IS NOT NULL)").fetchone()
     cov["median_book_latency_ms"] = cov["median_book_latency_ms"][0] if cov["median_book_latency_ms"] else None
 
-    # late-window study, per horizon and seconds-to-close bucket
+    # late-window study, per horizon and seconds-to-close bucket. Live websocket books are
+    # used when present; CDN-cached REST books (up to 30 s stale) only as a labelled fallback.
+    use_src = "ws" if cov["book_snapshots_live_ws"] else "rest"
+    rep["late_window_source"] = use_src
     agg = defaultdict(lambda: {"snapshots": 0, "leader_won": 0, "leader_ask_avail": 0,
                                "ask_sum": 0.0, "ev_sum": 0.0, "ev_n": 0})
     for slug, asset, horizon, ws, we, ptb, close, contract, out in markets:
@@ -58,7 +64,8 @@ def build_report(conn, max_ask: float = 0.98, theta: float = 0.095) -> dict:
             continue
         snaps = conn.execute(
             "SELECT ts, secs_to_close, best_bid, best_ask, bids_json, offers_json FROM book_snapshots "
-            "WHERE slug=? AND secs_to_close < 120 AND secs_to_close >= 0 ORDER BY ts", (slug,)).fetchall()
+            "WHERE slug=? AND secs_to_close < 120 AND secs_to_close >= 0 AND COALESCE(source,'rest')=? "
+            "ORDER BY ts", (slug, use_src)).fetchall()
         for ts, secs, best_bid, best_ask, _bj, _oj in snaps:
             b = _bucket(secs)
             est = projected_close(ticks, t_end, int(ts))
@@ -85,6 +92,16 @@ def build_report(conn, max_ask: float = 0.98, theta: float = 0.095) -> dict:
             "avg_leader_ask": round(a["ask_sum"] / a["ev_n"], 4) if a["ev_n"] else None,
             "naive_ev_per_contract_after_taker_fee": round(a["ev_sum"] / a["ev_n"], 4) if a["ev_n"] else None,
         }
+    if use_src == "rest":
+        rep["notes"].insert(0, "LATE-WINDOW TABLE USES CDN-CACHED REST BOOKS (up to 30 s stale). Prices "
+                            "in it are NOT what you could have traded. Record with an API key (live "
+                            "websocket) before drawing any conclusion.")
+    if rep["settlement_check"]:
+        errs = [abs(c["error"]) for c in rep["settlement_check"] if c["error"] is not None]
+        if errs and max(errs) > 0.01:
+            rep["notes"].append("The public 1-second index candles reproduce official closes only "
+                                f"approximately (max error {max(errs):.2f}); treat closes within that "
+                                "distance of priceToBeat as uncertain.")
     if cov["markets_settled"] < 200:
         rep["notes"].append(f"Only {cov['markets_settled']} settled markets: far too few to conclude "
                             "anything. Record 1-2 weeks before trusting these numbers.")
@@ -106,7 +123,7 @@ def format_report(rep: dict) -> str:
             out.append(f"  {c['slug']}: official {c['official_close']} recorded {c['recorded_avg']} "
                        f"({c['ticks']}/60 ticks) error {c['error']}")
     if rep["late_window"]:
-        out.append("\nLate-window leader study (per snapshot):")
+        out.append(f"\nLate-window leader study (per snapshot, book source: {rep.get('late_window_source')}):")
         out.append(f"  {'bucket':18s} {'snaps':>6s} {'leader WR':>10s} {'ask ok':>8s} {'avg ask':>8s} {'naive EV':>9s}")
         for k, v in rep["late_window"].items():
             vals = list(v.values())

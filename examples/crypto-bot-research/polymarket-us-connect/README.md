@@ -74,14 +74,15 @@ With a dummy key the server answers `401 API key not found`. That confirms the s
 
 ## Data recorder (`pmus_recorder`)
 
-Records what the [recommended late-window strategy](../README.md) needs to test itself. It uses public endpoints only, needs no key, and never trades.
+Records the data the [recommended late-window strategy](../README.md) needs to test itself. It never trades.
 
-| Data | Source | Cadence |
-|---|---|---|
-| Up/Down windows (slug, window, `priceToBeat`) | `GET /v1/markets?categories=crypto` | Every 30 s |
-| Order book, top 10 levels each side | `GET /v1/markets/{slug}/book` | 10 s, then **1 s in the final 180 s** |
-| Settlement index (BRTI), 1-second candles | `GET /v1/asset-prices/history` | Every 10 s, with gaps backfilled |
-| Settlement (index close plus contract payout) | `/v1/market/slug/{slug}`, `/v1/markets/{slug}/settlement` | After close, until published |
+| Data | Source | Live? | Cadence |
+|---|---|---|---|
+| Up/Down windows (slug, window, `priceToBeat`) | `GET /v1/markets?categories=crypto` plus `/v1/market/slug/{slug}` | List is cached 30 s; per-market detail is live | Every 30 s |
+| **Order book (top 10 levels) and trades** | `wss://api.polymarket.us/v1/ws/markets` (**API key**) | **Live** | Every update |
+| Order book fallback | `GET /v1/markets/{slug}/book` | **No: CDN `max-age=30`** | 1–10 s |
+| Settlement index (BRTI), 1-second candles | `GET /v1/asset-prices/history` | Live | Every 10 s, gaps backfilled |
+| Settlement (index close plus contract payout) | `/v1/market/slug/{slug}`, `/v1/markets/{slug}/settlement` | Live | After close |
 
 ```bash
 python -m pmus_recorder record                                 # BTC 15m + 1h, until Ctrl-C
@@ -89,18 +90,26 @@ python -m pmus_recorder record --assets btc,eth --horizons 5m,15m,1h --duration 
 python -m pmus_recorder report                                 # coverage + late-window table
 ```
 
+With `POLYMARKET_KEY_ID` and `POLYMARKET_SECRET_KEY` set, the recorder streams live books and trades over the websocket. It reconnects with backoff and keeps the REST book as a slow cross-check. Without a key it records cached REST books only, and the report labels that data unusable for late-window analysis.
+
 Data goes to `data/pmus.sqlite` (git-ignored). Restarting resumes unsettled markets. Run it on a server with `nohup` or as a systemd service for 1–2 weeks.
 
 The **report** shows:
-- **Coverage:** markets, snapshots, ticks, errors, and API latency.
-- **Settlement reproduction:** recomputes each official close from the recorded 60-second index average. If the error is not about 0, the data can't support the strategy.
+- **Coverage:** markets, live versus cached snapshots, ticks, trades, errors, and latency.
+- **Settlement reproduction:** the official close compared with the recorded 60-second index average.
 - **Late-window leader study:** for each 30-second bucket before close:
-  - how often the side leading on the projected 60-second average actually won
+  - how often the side leading on the projected 60-second average won
   - how often it could be bought at $0.98 or less
   - the average price
-  - a **naive** EV per contract after the taker fee
+  - a naive EV per contract after the taker fee, assuming perfect fills, so it is an upper bound
 
-  The naive EV assumes perfect fills, so it is an upper bound and not a backtest.
+### What the first live test run found (2026-11-20, 25 min, BTC + ETH, 5m/15m/1h)
+
+- **The public order book is cached up to 30 s.** It returned `cache-control: public, max-age=30` with the `Age` header counting up, and recorded snapshots were on average 14 s old (max 29 s). A last-two-minutes strategy **needs the authenticated websocket**.
+- **The public 1-second index candles reproduce closes only approximately.** BTC was off by up to about $19 (around 0.03%), and ETH by less than $0.70. Shifting the alignment does not fix it, so the candles aggregate a faster feed. Treat closes within that distance of `priceToBeat` as coin-flips.
+- **When the outcome is obvious, there is nothing to buy.** On 15m/1h windows where BTC was 0.5–0.7% above the open, the book showed a $0.99 bid and **no offers at all**. Any edge has to come from closer races.
+- **Settlement is fast.** Markets resolved about 1 minute after close. The contract-settlement endpoint can lag the index close, which the recorder handles.
+- 0 errors. API latency was about 41 ms from this host.
 
 ## Polymarket US facts that matter for any future bot
 

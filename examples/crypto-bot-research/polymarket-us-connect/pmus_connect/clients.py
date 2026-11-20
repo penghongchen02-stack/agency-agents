@@ -26,6 +26,7 @@ class Response:
     text: str
     elapsed_ms: float
     server_time: float | None   # epoch seconds from the Date header
+    cache_age: float | None = None   # CDN Age header, seconds (None if not cached)
 
 
 class _RateLimiter:
@@ -73,7 +74,11 @@ class RestClient:
                     server_time = parsedate_to_datetime(r.headers["date"]).timestamp()
                 except (TypeError, ValueError):
                     server_time = None
-            return Response(r.status_code, payload, r.text.strip()[:500], elapsed, server_time)
+            try:
+                age = float(r.headers["age"]) if "age" in r.headers else None
+            except ValueError:
+                age = None
+            return Response(r.status_code, payload, r.text.strip()[:500], elapsed, server_time, age)
         raise RuntimeError("unreachable")
 
     def public_get(self, path: str, params: Any = None) -> Response:

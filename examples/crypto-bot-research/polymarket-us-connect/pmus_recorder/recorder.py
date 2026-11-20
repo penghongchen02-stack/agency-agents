@@ -14,6 +14,7 @@ rate-limited RestClient.
 from __future__ import annotations
 
 import json
+import queue
 import signal
 import time
 from dataclasses import dataclass, field
@@ -69,14 +70,16 @@ class Tracked:
 
 
 class Recorder:
-    def __init__(self, conn, cfg: Config, rest: RestClient | None = None) -> None:
+    def __init__(self, conn, cfg: Config, rest: RestClient | None = None, feed=None,
+                 feed_queue: queue.Queue | None = None) -> None:
         self.conn, self.cfg = conn, cfg
+        self.feed, self.feed_queue = feed, feed_queue
         self.rest = rest or RestClient(None, rps=cfg.rps)
         self.tracked: dict[str, Tracked] = {}
         self.last_index_ts: dict[str, int] = {}
         self.next_discovery = 0.0
         self.next_index = 0.0
-        self.stats = {"books": 0, "index": 0, "settled": 0, "errors": 0}
+        self.stats = {"books": 0, "ws_books": 0, "trades": 0, "index": 0, "settled": 0, "errors": 0}
         self._stop = False
         self._restore()
 
@@ -91,6 +94,9 @@ class Recorder:
                 self.tracked[slug] = Tracked(slug, asset, horizon, ws, we, ptb)
         for asset, ts in self.conn.execute("SELECT asset, MAX(ts) FROM index_ticks GROUP BY asset"):
             self.last_index_ts[asset] = ts
+        if self.feed:
+            for slug in self.tracked:
+                self.feed.add(slug)
 
     def stop(self, *_) -> None:
         self._stop = True
@@ -100,6 +106,8 @@ class Recorder:
         signal.signal(signal.SIGTERM, self.stop)
         db.log_event(self.conn, "INFO", f"recorder start {self.cfg}")
         t_end = time.time() + duration_s if duration_s else None
+        if self.feed:
+            self.feed.start()
         last_status = 0.0
         while not self._stop and (t_end is None or time.time() < t_end):
             now = time.time()
@@ -111,6 +119,7 @@ class Recorder:
                     for a in self.cfg.assets:
                         self.record_index(a)
                     self.next_index = now + self.cfg.index_s
+                self.drain_feed()
                 for m in list(self.tracked.values()):
                     self.service(m, time.time())
                 self.conn.commit()
@@ -123,6 +132,9 @@ class Recorder:
                 print(self.status_line(), flush=True)
                 last_status = now
             time.sleep(0.2)
+        if self.feed:
+            self.feed.stop()
+            self.drain_feed()
         db.log_event(self.conn, "INFO", f"recorder stop {self.stats}")
         self.conn.commit()
         self.rest.close()
@@ -130,7 +142,11 @@ class Recorder:
 
     def status_line(self) -> str:
         live = [m for m in self.tracked.values() if not m.settled]
-        return (f"[{time.strftime('%H:%M:%S')}] tracking {len(live)} markets | books {self.stats['books']} "
+        ws = ""
+        if self.feed:
+            ws = (f"| ws {'up' if self.feed.connected else 'DOWN'} books {self.stats['ws_books']} "
+                  f"trades {self.stats['trades']} ")
+        return (f"[{time.strftime('%H:%M:%S')}] tracking {len(live)} markets {ws}| rest books {self.stats['books']} "
                 f"| index ticks {self.stats['index']} | settled {self.stats['settled']} "
                 f"| errors {self.stats['errors']}")
 
@@ -163,6 +179,8 @@ class Recorder:
                     "price_to_beat, tick_size, first_seen, updated) VALUES (?,?,?,?,?,?,?,?,?)",
                     (slug, asset, t["horizon"], ws, we, ptb, m.get("orderPriceMinTickSize"), now, now))
                 db.log_event(self.conn, "INFO", f"tracking {slug}")
+                if self.feed:
+                    self.feed.add(slug)
             if len(markets) < 200 or offset > 5000:
                 break
             offset += 200
@@ -189,7 +207,9 @@ class Recorder:
             return
         if now < m.window_end + 2 and now >= m.next_book:
             self.record_book(m, now)
-            interval = self.cfg.fast_s if m.window_end - now <= self.cfg.fast_window_s else self.cfg.slow_s
+            live = self.feed is not None and self.feed.connected
+            fast = m.window_end - now <= self.cfg.fast_window_s and not live
+            interval = self.cfg.fast_s if fast else self.cfg.slow_s
             m.next_book = now + interval
         if m.price_to_beat is None and now >= m.window_start and now >= m.next_meta:
             self.refresh_meta(m)
@@ -214,19 +234,55 @@ class Recorder:
         offers = [[_f(l["px"]), _f(l["qty"])] for l in (md.get("offers") or [])[:n]]
         self.conn.execute(
             "INSERT INTO book_snapshots(slug, ts, secs_to_close, state, best_bid, best_ask, bid_qty, "
-            "ask_qty, bids_json, offers_json, latency_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            "ask_qty, bids_json, offers_json, latency_ms, source, cache_age_s) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (m.slug, now, m.window_end - now, md.get("state"),
              bids[0][0] if bids else None, offers[0][0] if offers else None,
              bids[0][1] if bids else None, offers[0][1] if offers else None,
-             json.dumps(bids), json.dumps(offers), r.elapsed_ms))
+             json.dumps(bids), json.dumps(offers), r.elapsed_ms, "rest", r.cache_age))
         self.stats["books"] += 1
 
-    def _market_terms(self, slug: str) -> dict:
+    def drain_feed(self) -> None:
+        if not self.feed_queue:
+            return
+        while True:
+            try:
+                item = self.feed_queue.get_nowait()
+            except queue.Empty:
+                return
+            kind = item[0]
+            if kind == "event":
+                db.log_event(self.conn, item[1], item[2])
+            elif kind == "book":
+                _, slug, ts, state, bids, offers = item
+                m = self.tracked.get(slug)
+                end = m.window_end if m else (self.conn.execute(
+                    "SELECT window_end FROM markets WHERE slug=?", (slug,)).fetchone() or [None])[0]
+                if end is None:
+                    continue
+                self.conn.execute(
+                    "INSERT INTO book_snapshots(slug, ts, secs_to_close, state, best_bid, best_ask, "
+                    "bid_qty, ask_qty, bids_json, offers_json, latency_ms, source, cache_age_s) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,NULL,'ws',NULL)",
+                    (slug, ts, end - ts, state, bids[0][0] if bids else None,
+                     offers[0][0] if offers else None, bids[0][1] if bids else None,
+                     offers[0][1] if offers else None, json.dumps(bids), json.dumps(offers)))
+                self.stats["ws_books"] += 1
+            elif kind == "trade":
+                _, slug, ts, trade_time, price, qty, maker, taker = item
+                self.conn.execute(
+                    "INSERT INTO trades(slug, trade_time, ts, price, quantity, maker_intent, taker_intent) "
+                    "VALUES (?,?,?,?,?,?,?)", (slug, trade_time, ts, price, qty, maker, taker))
+                self.stats["trades"] += 1
+
+    def _market(self, slug: str) -> dict:
         r = self.rest.public_get(f"/v1/market/slug/{slug}")
-        if r.status != 200:
+        if r.status != 200 or not isinstance(r.json, dict):
             return {}
-        market = r.json.get("market", r.json)
-        return market.get("assetPriceTerms") or {}
+        return r.json.get("market", r.json) or {}
+
+    def _market_terms(self, slug: str) -> dict:
+        return self._market(slug).get("assetPriceTerms") or {}
 
     def refresh_meta(self, m: Tracked) -> None:
         ptb = _f(self._market_terms(m.slug).get("priceToBeat"))
@@ -236,7 +292,9 @@ class Recorder:
                               (ptb, time.time(), m.slug))
 
     def check_settlement(self, m: Tracked) -> None:
-        terms = self._market_terms(m.slug)
+        market = self._market(m.slug)
+        terms = market.get("assetPriceTerms") or {}
+        resolved = market.get("status") == "MARKET_STATUS_RESOLVED"
         close = _f(terms.get("settlementPrice"))
         ptb = _f(terms.get("priceToBeat")) or m.price_to_beat
         r = self.rest.public_get(f"/v1/markets/{m.slug}/settlement")
@@ -252,7 +310,9 @@ class Recorder:
             "UPDATE markets SET settlement_price=COALESCE(?, settlement_price), "
             "contract_settlement=COALESCE(?, contract_settlement), price_to_beat=COALESCE(?, price_to_beat), "
             "outcome=?, updated=? WHERE slug=?", (close, contract, ptb, out, time.time(), m.slug))
-        if contract is not None:
+        # The contract settlement endpoint can lag the index close; a resolved market
+        # with a published close is final.
+        if contract is not None or (resolved and close is not None and out is not None):
             m.settled = True
             self.stats["settled"] += 1
             db.log_event(self.conn, "INFO", f"settled {m.slug}: {out} close={close} ptb={ptb} contract={contract}")

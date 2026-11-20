@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS book_snapshots (
     ask_qty REAL,
     bids_json TEXT,                      -- top levels [[px, qty], ...]
     offers_json TEXT,
-    latency_ms REAL
+    latency_ms REAL,
+    source TEXT,                         -- 'ws' (live) or 'rest' (CDN-cached, up to 30 s old)
+    cache_age_s REAL                     -- CDN Age header for REST snapshots
 );
 CREATE INDEX IF NOT EXISTS ix_book_slug_ts ON book_snapshots(slug, ts);
 CREATE TABLE IF NOT EXISTS index_ticks (
@@ -66,6 +68,10 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(book_snapshots)")}
+    for col, typ in (("source", "TEXT"), ("cache_age_s", "REAL")):
+        if col not in cols:                           # migrate recordings from older versions
+            conn.execute(f"ALTER TABLE book_snapshots ADD COLUMN {col} {typ}")
     return conn
 
 

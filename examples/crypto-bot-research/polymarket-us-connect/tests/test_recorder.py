@@ -63,3 +63,40 @@ def test_report_on_synthetic_recording(tmp_path):
     assert row["leader_win_rate"] == 1.0
     assert row["avg_leader_ask"] == 0.97
     assert abs(row["naive_ev_per_contract_after_taker_fee"] - (1 - 0.97 - taker_fee(0.97))) < 1e-4
+
+
+def test_ws_messages_flow_into_db(tmp_path):
+    import queue
+    from pmus_connect.config import Credentials
+    from pmus_recorder.recorder import Config, Recorder, Tracked
+    from pmus_recorder.ws_feed import MarketsFeed
+    import base64, os as _os
+
+    q = queue.Queue()
+    feed = MarketsFeed(Credentials("k", base64.b64encode(_os.urandom(32)).decode()), q)
+    now = time.time()
+    feed._handle({"heartbeat": {}}, now)
+    feed._handle({"marketData": {"marketSlug": "m1", "state": "MARKET_STATE_OPEN",
+                                 "bids": [{"px": {"value": "0.95"}, "qty": "10"}],
+                                 "offers": [{"px": {"value": "0.97"}, "qty": "5"}]}}, now)
+    feed._handle({"trade": {"marketSlug": "m1", "price": {"value": "0.97"}, "quantity": {"value": "5"},
+                            "tradeTime": "2026-11-20T14:00:00Z",
+                            "maker": {"intent": "ORDER_INTENT_SELL_LONG"},
+                            "taker": {"intent": "ORDER_INTENT_BUY_LONG"}}}, now)
+    feed._handle({"error": "bad slug"}, now)
+    assert q.qsize() == 3
+
+    conn = db.connect(tmp_path / "w.sqlite")
+
+    class NoNet:            # recorder must not touch the network in this test
+        def close(self):
+            pass
+
+    rec = Recorder(conn, Config(), rest=NoNet(), feed=None, feed_queue=q)
+    rec.tracked["m1"] = Tracked("m1", "btc", "15m", now - 800, now + 100, 100.0)
+    rec.drain_feed()
+    row = conn.execute("SELECT source, best_bid, best_ask, round(secs_to_close) FROM book_snapshots").fetchone()
+    assert row == ("ws", 0.95, 0.97, 100.0)
+    assert conn.execute("SELECT price, quantity, taker_intent FROM trades").fetchone() == (
+        0.97, 5.0, "ORDER_INTENT_BUY_LONG")
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE level='WARN'").fetchone()[0] == 1
