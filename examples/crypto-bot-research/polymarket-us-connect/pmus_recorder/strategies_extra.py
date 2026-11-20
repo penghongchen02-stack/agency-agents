@@ -27,6 +27,7 @@ from collections import defaultdict
 from itertools import product
 
 from .settlement import taker_fee
+from . import study
 from .study import UNBUYABLE_AT_OR_ABOVE
 
 
@@ -39,7 +40,7 @@ def load_markets(conn):
     for slug, ts, up, down in conn.execute(
             "SELECT slug, ts, up_price, down_price FROM price_points ORDER BY ts"):
         if up is not None and down is not None:
-            pts[slug].append((ts, up, down))
+            pts[slug].append((ts + study.PRICE_DELAY_S, up, down))   # when it was really known
     return [{"slug": s, "asset": a, "horizon": h, "ws": int(round(ws)), "t_end": int(round(we)),
              "won_up": out == "UP", "pts": pts.get(s, [])} for s, a, h, ws, we, out in rows]
 
@@ -52,9 +53,8 @@ def _payout(side_up: bool, m) -> float:
     return 1.0 if side_up == m["won_up"] else 0.0
 
 
-def _at(m, now, tolerance=30):
-    c = [p for p in m["pts"] if now - tolerance <= p[0] <= now]
-    return c[-1] if c else None
+def _at(m, now, tolerance=60):
+    return study.decision_point(m["pts"], now, tolerance)
 
 
 def simulate_both_sides(m, params, theta):

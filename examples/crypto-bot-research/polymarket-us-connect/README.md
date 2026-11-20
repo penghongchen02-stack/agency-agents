@@ -112,7 +112,7 @@ python -m pmus_recorder backfill --days 45            # BTC 15m + 1h, about 5,40
 python -m pmus_recorder study                          # availability, calibration, walk-forward test
 ```
 
-`study` makes every decision using only data available at T-180, T-120, or T-60 seconds:
+`study` makes every decision using only data available at about T-180, T-120, or T-60 seconds, at the moment a price was really seen:
 - **Projected close:** the elapsed part of the 60-second settlement average, with the latest price filling the rest.
 - **Leader** and its displayed price.
 - **P&L** after the Tier 1 taker fee.
@@ -131,7 +131,18 @@ Limits:
 
 Treat a positive result as a reason to test with live books and tiny size, not as proof of profit.
 
-**First full run (45 days, 5,353 markets): see [RESULTS-2026-11-20.md](RESULTS-2026-11-20.md).** At T-120 and T-180 s there was no edge: buying the leader lost 1–3¢ per contract after fees. A positive pocket appeared at T-60 s but was rare (57 chances in 45 days) and unverified for size.
+**Price timestamps run about 90 s early.** A lead-lag test against the settlement index shows that a `/v1/price-history` point reflects the market about 90 s after its timestamp. The tools therefore treat each point as known at `timestamp + --price-delay` (default 90) and decide at that moment.
+
+**Results:** see [RESULTS-2026-11-20-all-strategies.md](RESULTS-2026-11-20-all-strategies.md), covering 45,932 markets, 4 coins, 3 window lengths and 7 strategy families.
+- **Losers:** both-sides, NeverSmiling-style, long-shot and momentum lose after fees under every timing assumption.
+- **Unproven:** the late-window index-leader bot looks positive, but only by about as much as the timing uncertainty, so it needs live websocket data to confirm or reject.
+
+The first BTC-only run ([RESULTS-2026-11-20.md](RESULTS-2026-11-20.md)) used raw timestamps and is superseded.
+
+```bash
+python -m pmus_recorder compare                      # all 7 families, walk-forward, per coin/window
+python -m pmus_recorder compare --price-delay 75     # check how much the result depends on timing
+```
 
 ### What the first live test run found (2026-11-20, 25 min, BTC + ETH, 5m/15m/1h)
 

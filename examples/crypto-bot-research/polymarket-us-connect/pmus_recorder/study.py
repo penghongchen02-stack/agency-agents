@@ -33,6 +33,26 @@ UNBUYABLE_AT_OR_ABOVE = 0.99
 # The strategy buys the FAVOURITE. A leader priced under $0.50 means the market disagrees with
 # the index projection; buying it is a different (long-shot) strategy, so it is excluded.
 MIN_PRICE = 0.50
+# /v1/price-history timestamps run EARLY. A lead-lag test against the 1 s settlement index
+# (400 random 15m/1h markets, 2026-11-20) showed price changes line up with index moves about
+# 90 s AFTER their timestamp, with no correlation at the stated time. Using the raw stamp lets
+# a "T-60" decision see the price from about T+30, after the result is known. Every point is
+# therefore moved to ts + PRICE_DELAY_S, and each decision is made AT that moment, using index
+# data only up to then. A delay set too short peeks ahead; one set too long trades a stale
+# quote against a fresher index. Both inflate profits, so run `compare --price-delay` at
+# 60/90/120 and trust only results that hold at the measured value (90 s).
+PRICE_DELAY_S = 90
+
+
+def decision_point(pts, target, max_age=60):
+    """Latest price point really known at or before `target` (and no older than max_age).
+    Returns (decision_time, up, down) or None. The caller must use index data only up to
+    decision_time, so the price and the index are equally fresh."""
+    best = None
+    for p in pts:
+        if target - max_age <= p[0] <= target:
+            best = p
+    return best
 CALIB_BUCKETS = [(0.50, 0.80), (0.80, 0.90), (0.90, 0.95), (0.95, 0.97), (0.97, 0.985)]
 
 
@@ -46,7 +66,7 @@ def load(conn):
         ticks[asset][ts] = close
     points = defaultdict(list)
     for slug, ts, up, down in conn.execute("SELECT slug, ts, up_price, down_price FROM price_points ORDER BY ts"):
-        points[slug].append((ts, up, down))
+        points[slug].append((ts + PRICE_DELAY_S, up, down))   # when it was really known
     return markets, ticks, points
 
 
@@ -57,13 +77,12 @@ def observations(markets, ticks, points):
         t_end = int(round(we))
         full = ticks.get(asset, {})
         # only this market's last minutes: keeps projected_close O(window) instead of O(all ticks)
-        tk = {t: full[t] for t in range(t_end - max(OFFSETS) - 120, t_end) if t in full}
+        tk = {t: full[t] for t in range(t_end - max(OFFSETS) - 200, t_end) if t in full}
         for d in OFFSETS:
-            now = t_end - d
-            pts = [p for p in points.get(slug, []) if now - 30 <= p[0] <= now]
-            if not pts:
+            pt = decision_point(points.get(slug, []), t_end - d)
+            if not pt:
                 continue
-            _, up, down = pts[-1]
+            now, up, down = pt
             est = projected_close(tk, t_end, now)
             if est is None or up is None or down is None:
                 continue

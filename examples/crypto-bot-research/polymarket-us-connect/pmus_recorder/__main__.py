@@ -46,10 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--workers", type=int, default=8, help="parallel requests in flight")
     st = sub.add_parser("study", help="test the late-window leader strategy on backfilled data")
     st.add_argument("--db", type=Path, default=DEFAULT_DB)
+    st.add_argument("--price-delay", type=int, default=90,
+                    help="seconds a /v1/price-history point lags its timestamp (measured: 90)")
     st.add_argument("--theta", type=float, default=0.095, help="taker fee coefficient (Tier 1 = 0.095)")
     st.add_argument("--json", action="store_true")
     cp = sub.add_parser("compare", help="compare strategy families per asset/horizon (walk-forward)")
     cp.add_argument("--db", type=Path, default=DEFAULT_DB)
+    cp.add_argument("--price-delay", type=int, default=90,
+                    help="seconds a /v1/price-history point lags its timestamp (measured: 90)")
     cp.add_argument("--theta", type=float, default=0.095)
     cp.add_argument("--json", action="store_true")
     rep = sub.add_parser("report", help="summarize a recording")
@@ -90,6 +94,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)
         return 1
+    if args.cmd in ("compare", "study"):
+        from . import study as _study
+        _study.PRICE_DELAY_S = args.price_delay
     if args.cmd == "compare":
         import json
         from .backfill import SCHEMA

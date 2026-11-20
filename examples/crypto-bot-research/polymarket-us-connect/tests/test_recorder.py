@@ -102,6 +102,9 @@ def test_ws_messages_flow_into_db(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM events WHERE level='WARN'").fetchone()[0] == 1
 
 
+from pmus_recorder.study import PRICE_DELAY_S  # noqa: E402
+
+
 def _synthetic_backfill(tmp_path, n=90):
     from pmus_recorder.backfill import SCHEMA
     conn = db.connect(tmp_path / "s.sqlite")
@@ -121,10 +124,23 @@ def _synthetic_backfill(tmp_path, n=90):
         lead_px = 0.99 if i % 5 == 0 else 0.95
         for d in (180, 120, 60):
             upp, dnp = (lead_px, 1 - lead_px + 0.01) if up else (1 - lead_px + 0.01, lead_px)
-            conn.execute("INSERT INTO price_points VALUES (?,?,?,?)", (f"m{i}", we - d, upp, dnp))
+            # stored stamps run PRICE_DELAY_S early, as on the real endpoint
+            conn.execute("INSERT INTO price_points VALUES (?,?,?,?)",
+                         (f"m{i}", we - d - PRICE_DELAY_S, upp, dnp))
         conn.execute("INSERT INTO backfill_done VALUES (?,3,0)", (f"m{i}",))
     conn.commit()
     return conn
+
+
+def test_price_points_are_used_only_after_the_delay(tmp_path):
+    from pmus_recorder.study import load
+    from pmus_recorder.strategies_extra import load_markets
+    conn = _synthetic_backfill(tmp_path)
+    raw = {ts for (ts,) in conn.execute("SELECT ts FROM price_points WHERE slug='m1'")}
+    _, _, points = load(conn)
+    assert {p[0] for p in points["m1"]} == {t + PRICE_DELAY_S for t in raw}
+    m1 = next(m for m in load_markets(conn) if m["slug"] == "m1")
+    assert {p[0] for p in m1["pts"]} == {t + PRICE_DELAY_S for t in raw}
 
 
 def test_study_excludes_unbuyable_and_has_no_lookahead(tmp_path):
