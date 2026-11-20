@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--duration", type=float)
     ar = sub.add_parser("arb-report", help="results of the arbitrage paper test")
     ar.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "arb.sqlite")
+    bt = sub.add_parser("backtest", help="day-by-day backtest of the hunt's portfolio from a bankroll, with stress tests")
+    bt.add_argument("--db", type=Path, default=DEFAULT_DB)
+    bt.add_argument("--state", type=Path, default=DEFAULT_DB.parent / "hunt" / "state.json")
+    bt.add_argument("--out", type=Path)
+    bt.add_argument("--bankroll", type=float, default=1000.0)
+    bt.add_argument("--cap", type=int, default=50)
     hu = sub.add_parser("hunt", help="keep backfilling and searching until a variation meets the target")
     hu.add_argument("--db", type=Path, default=DEFAULT_DB)
     hu.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "hunt")
@@ -143,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "arb-report":
         from .arb_paper import arb_report
         print(arb_report(db.connect(args.db)))
+        return 0
+    if args.cmd == "backtest":
+        from .portfolio_backtest import main as bt_main
+        print(bt_main(args.db, args.state, args.out, args.bankroll, args.cap))
         return 0
     if args.cmd == "hunt":
         from .hunt import run_hunt

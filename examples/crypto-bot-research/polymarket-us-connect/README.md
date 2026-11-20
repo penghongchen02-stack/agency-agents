@@ -180,6 +180,12 @@ See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md).
 
 `hunt --bankroll` changes the starting amount.
 
+**Portfolio backtest from $1,000** (`python -m pmus_recorder backtest`): the hunt's two confirmed bots, day by day, with stress tests.
+- **Holdout:** $1,000 grew to $3,545 in 9 days (about $283/day; the middle day was about $165). Every day was profitable.
+- **All stresses together:** $91/day.
+
+See [RESULTS-2026-11-20-portfolio-backtest.md](RESULTS-2026-11-20-portfolio-backtest.md).
+
 **Automatic hunt** (`python -m pmus_recorder hunt`). Every hour it backfills new markets and searches 3,991,680 variations under one Bonferroni bar, plus the arbitrage family. It ranks the top 5 in `data/hunt/leaderboard.md`, and stops when the confirmed winners make ≥ $100/day at ≤ 50 contracts on the holdout **and** on ≥ 3 new forward days.
 
 **New variants, running beside the originals.** Each one is built from a bot that lost and targets the reason it lost (`pmus_recorder/strategies_variants.py`). They are tested the same way, appear in `compare`, and each trades all four coins:
