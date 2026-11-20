@@ -9,6 +9,10 @@ Four Finance-division agents were run in parallel on the same evidence base: the
 | 3 | ⚡ [Crypto Up/Down Latency & Late-Window Strategist](../../finance/finance-crypto-updown-latency-strategist.md) | [03-latency-late-window-playbooks.md](03-latency-late-window-playbooks.md) | A latency-feasibility matrix, two playbooks a well-equipped independent can attempt, "do not attempt" verdicts, a measurement plan, and tail-risk numbers |
 | 4 | 🚀 [Token Launch Event Market Strategist](../../finance/finance-token-launch-event-market-strategist.md) | [04-token-launch-playbook.md](04-token-launch-playbook.md) | A MegaETH ladder post-mortem, an ROI reconciliation, a reusable launch playbook with a worked hypothetical, the public-sale "No" screen, and a risk register |
 
+## Next step: Polymarket US connectivity
+
+[polymarket-us-connect/](polymarket-us-connect/README.md) is a read-only pre-flight check. It verifies that public market data, the BRTI settlement feed, the authenticated API, and both websockets connect, before any bot is built. It cannot trade.
+
 ## Where the four agents agree
 
 1. **Incentives, not trading, make the biggest account numbers.**
