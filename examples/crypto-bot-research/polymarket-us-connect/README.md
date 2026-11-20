@@ -160,6 +160,19 @@ This runs all seven strategy bots forward on live data. **Each bot trades all fo
 
 `paper-report` shows each bot with all coins combined, then each coin separately.
 
+**New variants, running beside the originals.** Each one is built from a bot that lost and targets the reason it lost (`pmus_recorder/strategies_variants.py`). They are tested the same way, appear in `compare`, and each trades all four coins:
+
+| Variant | Built from | Change | 45-day backtest |
+|---|---|---|---|
+| model_edge_strict | model_edge | Needs a 3¢ edge, not 0¢ | +3.5 to +8.1¢ on 5m (all 4 coins) |
+| longshot_close | longshot | Buys cheap sides only when the index says the race is close | +3 to +14¢, but only 17–89 trades per coin |
+| both_sides_strict | both_sides | Starts at $0.15–0.20 and needs a pair cost of $0.90–0.94 | still loses (−0.2 to −3.8¢) |
+| neversmiling_favourite | neversmiling | Buys only the favourite, once | still loses (−3 to −14¢) |
+| momentum_confirmed | momentum | Follows a jump only if the index leader agrees | still loses (−1 to −3¢) |
+| momentum_fade | momentum | Buys the side that just dropped | still loses (−0.5 to −5¢) |
+
+**Dashboard.** `python -m pmus_recorder dashboard-export` writes `data/bots.json`, one row per bot and coin with its backtest and live paper results, for a dashboard.
+
 ```bash
 nohup python -m pmus_recorder paper > paper.log 2>&1 &      # runs until stopped; resumes after restart
 python -m pmus_recorder paper-report                         # per-bot results vs the backtest

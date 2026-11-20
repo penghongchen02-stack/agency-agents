@@ -34,8 +34,10 @@ from .settlement import outcome as settle_outcome
 from .settlement import projected_close, taker_fee
 from .strategies import _select, _sigma, model_probability
 from .strategies_extra import LEGS
+from .strategies_variants import VARIANTS
 
-INDEX_FAMILIES = ("favourite", "model_edge", "disagreement")
+INDEX_FAMILIES = ("favourite", "model_edge", "disagreement", "model_edge_strict")
+ALL_LEGS = {**LEGS, **{name: legs for name, (legs, _) in VARIANTS.items()}}
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,7 @@ class Bot:
     backtest_ev: float          # test-period EV per contract after fee, 90 s delay
     k: float = 12.0             # model fit (model_edge only), fitted on that segment's train set
     basis_bps: float = 0.0
+    variant_of: str = ""        # set for a new bot built from an original that lost
 
 
 # Every bot trades all four coins together. For each coin it uses the window length and
@@ -81,6 +84,31 @@ BOTS = (
     Bot("neversmiling", "eth", "1h", {"tilt": 1}, -0.1460),
     Bot("neversmiling", "sol", "1h", {"tilt": 1}, -0.1383),
     Bot("neversmiling", "xrp", "1h", {"tilt": 1}, -0.0862),
+    # ---- variants: NEW bots built from the originals (the originals keep running) ----
+    Bot("model_edge_strict", "btc", "5m", {"offset": 60, "edge": 0.03}, +0.0475, k=10.0, basis_bps=2.0, variant_of="model_edge"),
+    Bot("model_edge_strict", "eth", "5m", {"offset": 60, "edge": 0.03}, +0.0808, k=12.0, basis_bps=1.0, variant_of="model_edge"),
+    Bot("model_edge_strict", "sol", "5m", {"offset": 60, "edge": 0.03}, +0.0743, k=12.0, basis_bps=3.0, variant_of="model_edge"),
+    Bot("model_edge_strict", "xrp", "5m", {"offset": 60, "edge": 0.03}, +0.0347, k=12.0, basis_bps=0.0, variant_of="model_edge"),
+    Bot("both_sides_strict", "btc", "1h", {"entry": 0.15, "edge": 0.06}, -0.0136, variant_of="both_sides"),
+    Bot("both_sides_strict", "eth", "1h", {"entry": 0.15, "edge": 0.06}, -0.0375, variant_of="both_sides"),
+    Bot("both_sides_strict", "sol", "1h", {"entry": 0.2, "edge": 0.06}, -0.0353, variant_of="both_sides"),
+    Bot("both_sides_strict", "xrp", "1h", {"entry": 0.15, "edge": 0.08}, -0.0019, variant_of="both_sides"),
+    Bot("neversmiling_favourite", "btc", "1h", {"offset": 180, "lo": 0.7, "hi": 0.9}, -0.0803, variant_of="neversmiling"),
+    Bot("neversmiling_favourite", "eth", "15m", {"offset": 180, "lo": 0.55, "hi": 0.7}, -0.0623, variant_of="neversmiling"),
+    Bot("neversmiling_favourite", "sol", "1h", {"offset": 420, "lo": 0.6, "hi": 0.8}, -0.1422, variant_of="neversmiling"),
+    Bot("neversmiling_favourite", "xrp", "15m", {"offset": 180, "lo": 0.55, "hi": 0.7}, -0.0343, variant_of="neversmiling"),
+    Bot("longshot_close", "btc", "15m", {"offset": 60, "max_price": 0.3, "max_margin_bps": 3}, +0.0369, variant_of="longshot"),
+    Bot("longshot_close", "eth", "15m", {"offset": 120, "max_price": 0.3, "max_margin_bps": 3}, +0.1361, variant_of="longshot"),
+    Bot("longshot_close", "sol", "5m", {"offset": 60, "max_price": 0.2, "max_margin_bps": 5}, +0.0886, variant_of="longshot"),
+    Bot("longshot_close", "xrp", "5m", {"offset": 60, "max_price": 0.3, "max_margin_bps": 3}, +0.0330, variant_of="longshot"),
+    Bot("momentum_confirmed", "btc", "1h", {"offset": 120, "lookback_min": 2, "rise": 0.1}, -0.0337, variant_of="momentum"),
+    Bot("momentum_confirmed", "eth", "15m", {"offset": 60, "lookback_min": 5, "rise": 0.1}, -0.0119, variant_of="momentum"),
+    Bot("momentum_confirmed", "sol", "15m", {"offset": 60, "lookback_min": 2, "rise": 0.2}, -0.0323, variant_of="momentum"),
+    Bot("momentum_confirmed", "xrp", "15m", {"offset": 60, "lookback_min": 5, "rise": 0.1}, -0.0192, variant_of="momentum"),
+    Bot("momentum_fade", "btc", "15m", {"offset": 180, "lookback_min": 3, "drop": 0.3}, -0.0465, variant_of="momentum"),
+    Bot("momentum_fade", "eth", "15m", {"offset": 60, "lookback_min": 2, "drop": 0.2}, -0.0047, variant_of="momentum"),
+    Bot("momentum_fade", "sol", "15m", {"offset": 60, "lookback_min": 2, "drop": 0.3}, -0.0450, variant_of="momentum"),
+    Bot("momentum_fade", "xrp", "15m", {"offset": 120, "lookback_min": 3, "drop": 0.3}, -0.0281, variant_of="momentum"),
 )
 
 SCHEMA = """
@@ -234,14 +262,17 @@ class PaperTrader:
 
     # -------------------------------------------------------------- bots
     def _market_dict(self, m: Live) -> dict:
-        return {"slug": m.slug, "ws": int(round(m.ws)), "t_end": m.t_end, "pts": list(m.pts)}
+        return {"slug": m.slug, "ws": int(round(m.ws)), "t_end": m.t_end, "pts": list(m.pts),
+                "ptb": m.ptb, "ticks": self.ticks.get(m.asset, {})}
 
     def run_bots(self, m: Live, now: float) -> None:
         for b in m.bots:
             if b.name in INDEX_FAMILIES:
                 self._index_bot(b, m, now)
             else:
-                for ts, side_up, p, q in LEGS[b.name](self._market_dict(m), b.params, self.theta):
+                for ts, side_up, p, q in ALL_LEGS[b.name](self._market_dict(m), b.params, self.theta):
+                    if ts != m.pts[-1][0]:
+                        continue            # decide only on the point that just arrived (no hindsight)
                     key = (b.name, ts, "UP" if side_up else "DOWN")
                     if key not in m.logged:
                         m.logged.add(key)

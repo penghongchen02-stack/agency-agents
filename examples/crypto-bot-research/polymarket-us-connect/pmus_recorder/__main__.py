@@ -62,6 +62,9 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--quote-s", type=float, default=3.0, help="seconds between quote polls per market")
     pr = sub.add_parser("paper-report", help="paper-trading results per bot vs the backtest")
     pr.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
+    de = sub.add_parser("dashboard-export", help="write per-bot backtest + paper results as JSON")
+    de.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
+    de.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "bots.json")
     rep = sub.add_parser("report", help="summarize a recording")
     rep.add_argument("--db", type=Path, default=DEFAULT_DB)
     rep.add_argument("--max-ask", type=float, default=0.98)
@@ -128,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         conn.executescript(SCHEMA)
         res = run_study(conn, theta=args.theta)
         print(json.dumps(res, indent=2, default=str) if args.json else format_study(res))
+        return 0
+    if args.cmd == "dashboard-export":
+        from .dashboard_export import export
+        doc = export(args.db, args.out)
+        print(f"Wrote {len(doc['rows'])} rows to {args.out}")
         return 0
     if args.cmd == "paper-report":
         from .paper import paper_report

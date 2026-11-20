@@ -127,7 +127,7 @@ def _select(rows, family, params, theta):
             continue
         if family == "favourite":
             ok = 0.50 <= p <= params["max_price"] and r["margin_bps"] >= params["margin_bps"]
-        elif family == "model_edge":
+        elif family in ("model_edge", "model_edge_strict"):
             ok = r["p_model"] is not None and 0.50 <= p <= 0.98 and r["p_model"] - p - taker_fee(p, theta=theta) >= params["edge"]
         else:  # disagreement
             ok = params["min_price"] <= p < 0.50 and r["margin_bps"] >= params["margin_bps"]
@@ -149,6 +149,7 @@ GRIDS = {
     "favourite": [dict(offset=o, margin_bps=m, max_price=x)
                   for o, m, x in product(OFFSETS, (0, 5, 10, 20), (0.90, 0.95, 0.98))],
     "model_edge": [dict(offset=o, edge=e) for o, e in product(OFFSETS, (0.0, 0.02, 0.04, 0.08))],
+    "model_edge_strict": [dict(offset=o, edge=e) for o, e in product(OFFSETS, (0.03, 0.05))],   # variant
     "disagreement": [dict(offset=o, margin_bps=m, min_price=x)
                      for o, m, x in product(OFFSETS, (0, 5, 10, 20), (0.02, 0.05, 0.10))],
 }
@@ -202,7 +203,11 @@ def compare(conn, theta: float = 0.095, min_trades: int = 30) -> dict:
         res["segments"][f"{seg[0]} {seg[1]}"] = seg_out
     res["model_calibration"] = calibration_of_model(test_all)   # fitted model, TEST rows only
     from .strategies_extra import compare_extra
-    for seg, fams in compare_extra(conn, theta=theta, min_trades=min_trades).items():
+    from .strategies_variants import compare_variants
+    extra = compare_extra(conn, theta=theta, min_trades=min_trades)
+    for seg, fams in compare_variants(conn, theta=theta, min_trades=min_trades).items():
+        extra.setdefault(seg, {}).update(fams)
+    for seg, fams in extra.items():
         res["segments"].setdefault(seg, {"markets": None, "model_fit": {"k": "-", "basis_bps": "-"},
                                          "families": {}})["families"].update(fams)
     return res

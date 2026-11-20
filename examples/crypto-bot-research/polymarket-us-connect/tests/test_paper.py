@@ -72,3 +72,24 @@ def test_live_legs_match_the_backtest_simulator():
     m = {"ws": 900, "t_end": 1400, "pts": pts, "won_up": True}
     params = {"entry": 0.3, "edge": 0.0}
     assert settle_legs(LEGS["both_sides"](m, params, 0.095), True, 0.095) == simulate_both_sides(m, params, 0.095)
+
+
+def test_variants_are_causal_and_registered():
+    from pmus_recorder.paper import ALL_LEGS, BOTS
+    from pmus_recorder.strategies_variants import legs_longshot_close, legs_neversmiling_favourite
+    assert all(b.name in ALL_LEGS or b.name in ("favourite", "model_edge", "disagreement", "model_edge_strict")
+               for b in BOTS)
+    assert {b.name for b in BOTS if b.variant_of} == {
+        "model_edge_strict", "both_sides_strict", "neversmiling_favourite",
+        "longshot_close", "momentum_confirmed", "momentum_fade"}
+    t_end = 2000
+    m = {"ws": 1100, "t_end": t_end, "ptb": 100.0,
+         "pts": [(t_end - 90, 0.85, 0.16)], "ticks": {t: 100.01 for t in range(t_end - 200, t_end - 90)}}
+    # close race (1 bps): the cheap Down side is bought; outcome is never read
+    legs = legs_longshot_close(m, {"offset": 60, "max_price": 0.2, "max_margin_bps": 3}, 0.095)
+    assert legs == [(t_end - 90, False, 0.16, 1)]
+    # ticks after the decision must not change it
+    m["ticks"].update({t: 105.0 for t in range(t_end - 89, t_end)})
+    assert legs_longshot_close(m, {"offset": 60, "max_price": 0.2, "max_margin_bps": 3}, 0.095) == legs
+    fav = legs_neversmiling_favourite(m, {"offset": 60, "lo": 0.7, "hi": 0.9}, 0.095)
+    assert fav == [(t_end - 90, True, 0.85, 1)]
