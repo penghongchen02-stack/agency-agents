@@ -30,6 +30,9 @@ MAX_PRICES = (0.90, 0.95, 0.97, 0.98)
 # A $0.99 display price usually means "best bid 0.99, no offer" (seen in live books): nothing
 # to buy. Never count it as a fill.
 UNBUYABLE_AT_OR_ABOVE = 0.99
+# The strategy buys the FAVOURITE. A leader priced under $0.50 means the market disagrees with
+# the index projection; buying it is a different (long-shot) strategy, so it is excluded.
+MIN_PRICE = 0.50
 CALIB_BUCKETS = [(0.50, 0.80), (0.80, 0.90), (0.90, 0.95), (0.95, 0.97), (0.97, 0.985)]
 
 
@@ -52,7 +55,9 @@ def observations(markets, ticks, points):
     rows = []
     for slug, asset, horizon, we, ptb, close, out in markets:
         t_end = int(round(we))
-        tk = ticks.get(asset, {})
+        full = ticks.get(asset, {})
+        # only this market's last minutes: keeps projected_close O(window) instead of O(all ticks)
+        tk = {t: full[t] for t in range(t_end - max(OFFSETS) - 120, t_end) if t in full}
         for d in OFFSETS:
             now = t_end - d
             pts = [p for p in points.get(slug, []) if now - 30 <= p[0] <= now]
@@ -77,7 +82,7 @@ def _pnl(r, theta):
 
 def evaluate(rows, offset, margin_bps, max_price, theta):
     sel = [r for r in rows if r["offset"] == offset and r["margin_bps"] >= margin_bps
-           and 0 < r["price"] <= max_price and r["price"] < UNBUYABLE_AT_OR_ABOVE]
+           and MIN_PRICE <= r["price"] <= max_price and r["price"] < UNBUYABLE_AT_OR_ABOVE]
     if not sel:
         return {"n": 0}
     pnl = [_pnl(r, theta) for r in sel]

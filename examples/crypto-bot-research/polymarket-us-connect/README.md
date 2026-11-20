@@ -131,6 +131,8 @@ Limits:
 
 Treat a positive result as a reason to test with live books and tiny size, not as proof of profit.
 
+**First full run (45 days, 5,353 markets): see [RESULTS-2026-11-20.md](RESULTS-2026-11-20.md).** At T-120 and T-180 s there was no edge: buying the leader lost 1–3¢ per contract after fees. A positive pocket appeared at T-60 s but was rare (57 chances in 45 days) and unverified for size.
+
 ### What the first live test run found (2026-11-20, 25 min, BTC + ETH, 5m/15m/1h)
 
 - **The public order book is cached up to 30 s.** It returned `cache-control: public, max-age=30` with the `Age` header counting up, and recorded snapshots were on average 14 s old (max 29 s). A last-two-minutes strategy **needs the authenticated websocket**.
