@@ -13,6 +13,7 @@ Resumable: markets that already have price points are skipped.
 from __future__ import annotations
 
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 from pmus_connect.clients import RestClient
@@ -54,7 +55,8 @@ def _f(x):
 class Backfill:
     def __init__(self, conn, assets=("btc",), horizons=("15m", "1h"), days: float = 45,
                  history_lookback_s: int = 600, index_lookback_s: int = 180, rps: float = 8.0,
-                 rest: RestClient | None = None) -> None:
+                 rest: RestClient | None = None, workers: int = 8) -> None:
+        self.workers = workers
         self.conn = conn
         conn.executescript(SCHEMA)
         self.assets, self.horizons, self.days = set(assets), set(horizons), days
@@ -63,32 +65,40 @@ class Backfill:
         self.stats = {"markets": 0, "new": 0, "price_points": 0, "index_ticks": 0, "skipped": 0}
 
     # -------------------------------------------------- discovery
+    def _discover_chunk(self, lo: datetime, hi: datetime) -> list[dict]:
+        out, offset = [], 0
+        while True:
+            r = self.rest.public_get("/v1/markets", params={
+                "closed": "true", "categories": "crypto", "limit": 200, "offset": offset,
+                "endDateMin": _iso(lo), "endDateMax": _iso(hi)})
+            if r.status != 200:
+                raise RuntimeError(f"discovery HTTP {r.status}: {r.text[:120]}")
+            ms = r.json.get("markets", [])
+            for m in ms:
+                a = m.get("assetPriceTerms") or {}
+                if (a.get("marketType") == "ASSET_PRICE_MARKET_TYPE_UP_DOWN"
+                        and (a.get("asset") or {}).get("symbol") in self.assets
+                        and a.get("horizon") in self.horizons
+                        and m.get("status") == "MARKET_STATUS_RESOLVED"):
+                    out.append(m)
+            if len(ms) < 200:
+                return out
+            offset += 200
+
     def discover(self) -> list[dict]:
         found: dict[str, dict] = {}
         end = datetime.now(timezone.utc)
-        start = end - timedelta(days=self.days)
-        chunk = timedelta(hours=6)
-        t = start
+        t, chunks = end - timedelta(days=self.days), []
         while t < end:
-            offset = 0
-            while True:
-                r = self.rest.public_get("/v1/markets", params={
-                    "closed": "true", "categories": "crypto", "limit": 200, "offset": offset,
-                    "endDateMin": _iso(t), "endDateMax": _iso(min(t + chunk, end))})
-                if r.status != 200:
-                    raise RuntimeError(f"discovery HTTP {r.status}: {r.text[:120]}")
-                ms = r.json.get("markets", [])
-                for m in ms:
-                    a = m.get("assetPriceTerms") or {}
-                    if (a.get("marketType") == "ASSET_PRICE_MARKET_TYPE_UP_DOWN"
-                            and (a.get("asset") or {}).get("symbol") in self.assets
-                            and a.get("horizon") in self.horizons
-                            and m.get("status") == "MARKET_STATUS_RESOLVED"):
-                        found[m["slug"]] = m
-                if len(ms) < 200:
-                    break
-                offset += 200
-            t += chunk
+            chunks.append((t, min(t + timedelta(hours=6), end)))
+            t += timedelta(hours=6)
+        with ThreadPoolExecutor(self.workers) as pool:
+            futs = [pool.submit(self._discover_chunk, lo, hi) for lo, hi in chunks]
+            for i, f in enumerate(as_completed(futs), 1):
+                for m in f.result():
+                    found[m["slug"]] = m
+                if i % 20 == 0:
+                    print(f"  discovery {i}/{len(chunks)} chunks, {len(found)} markets so far", flush=True)
         return sorted(found.values(), key=lambda m: m["assetPriceTerms"]["windowEnd"])
 
     # -------------------------------------------------- per market
@@ -109,32 +119,37 @@ class Backfill:
              m.get("orderPriceMinTickSize"), now, now))
         return m["slug"], a["asset"]["symbol"], int(round(we))
 
-    def fetch_prices(self, slug: str, t_end: int) -> int:
+    def get_prices(self, slug: str, t_end: int) -> list[tuple]:
         r = self.rest.public_get("/v1/price-history", params={
             "symbol": slug, "timestamp.startTimestamp": t_end - self.hist_lb,
             "timestamp.endTimestamp": t_end + 30, "fidelity": 1})
         if r.status != 200:
             raise RuntimeError(f"price-history {slug} HTTP {r.status}: {r.text[:120]}")
-        rows = [(slug, int(p["timestamp"]), p.get("longPrice"), p.get("shortPrice"))
+        return [(slug, int(p["timestamp"]), p.get("longPrice"), p.get("shortPrice"))
                 for p in r.json.get("history", [])]
+
+    def save_prices(self, slug: str, rows: list[tuple]) -> int:
         self.conn.executemany("INSERT OR REPLACE INTO price_points VALUES (?,?,?,?)", rows)
         self.conn.execute("INSERT OR REPLACE INTO backfill_done VALUES (?,?,?)",
                           (slug, len(rows), time.time()))
         return len(rows)
 
-    def fetch_index(self, asset: str, t_end: int) -> int:
+    def need_index(self, asset: str, t_end: int) -> bool:
         have = self.conn.execute("SELECT COUNT(*) FROM index_ticks WHERE asset=? AND ts>=? AND ts<?",
                                  (asset, t_end - self.idx_lb, t_end)).fetchone()[0]
-        if have >= self.idx_lb - 2:
-            return 0
+        return have < self.idx_lb - 2
+
+    def get_index(self, asset: str, t_end: int) -> list[tuple]:
         r = self.rest.public_get("/v1/asset-prices/history", params={
             "assets": f"crypto:{asset}", "from": t_end - self.idx_lb, "to": t_end,
             "bucket": "ASSET_PRICE_BUCKET_1S"})
         if r.status != 200:
             raise RuntimeError(f"index HTTP {r.status}: {r.text[:120]}")
         candles = (r.json.get("series") or [{}])[0].get("candles") or []
-        rows = [(asset, int(c["timestamp"]), float(c["close"])) for c in candles
+        return [(asset, int(c["timestamp"]), float(c["close"])) for c in candles
                 if int(c.get("tickCount") or 0) > 0 and int(c["timestamp"]) < t_end]
+
+    def save_index(self, rows: list[tuple]) -> int:
         self.conn.executemany("INSERT OR REPLACE INTO index_ticks(asset, ts, close) VALUES (?,?,?)", rows)
         return len(rows)
 
@@ -145,25 +160,45 @@ class Backfill:
         self.stats["markets"] = len(markets)
         print(f"Found {len(markets)} resolved markets.", flush=True)
         done = {s for (s,) in self.conn.execute("SELECT slug FROM backfill_done")}
-        t0 = time.time()
-        for i, m in enumerate(markets, 1):
+        jobs, index_keys = [], set()
+        for m in markets:
             stored = self.store_market(m)
             if not stored:
                 self.stats["skipped"] += 1
                 continue
             slug, asset, t_end = stored
-            try:
-                if slug not in done:
-                    self.stats["price_points"] += self.fetch_prices(slug, t_end)
-                    self.stats["new"] += 1
-                self.stats["index_ticks"] += self.fetch_index(asset, t_end)
-            except Exception as exc:          # keep going; record and move on
-                db.log_event(self.conn, "ERROR", f"backfill {slug}: {exc}")
-            if i % 50 == 0:
-                self.conn.commit()
-            if i % progress_every == 0:
-                rate = i / max(time.time() - t0, 1e-9)
-                print(f"  {i}/{len(markets)} markets ({rate:.1f}/s) {self.stats}", flush=True)
+            if slug not in done:
+                jobs.append(("prices", slug, t_end))
+            if (asset, t_end) not in index_keys and self.need_index(asset, t_end):
+                index_keys.add((asset, t_end))
+                jobs.append(("index", asset, t_end))
+        self.conn.commit()
+        print(f"{len(jobs)} requests to make ({len(index_keys)} index windows).", flush=True)
+        t0 = time.time()
+
+        def work(job):
+            kind, key, t_end = job
+            return job, (self.get_prices(key, t_end) if kind == "prices" else self.get_index(key, t_end))
+
+        with ThreadPoolExecutor(self.workers) as pool:
+            futs = [pool.submit(work, j) for j in jobs]
+            for i, f in enumerate(as_completed(futs), 1):
+                try:
+                    (kind, key, t_end), rows = f.result()
+                    if kind == "prices":
+                        self.stats["price_points"] += self.save_prices(key, rows)
+                        self.stats["new"] += 1
+                    else:
+                        self.stats["index_ticks"] += self.save_index(rows)
+                except Exception as exc:      # keep going; record and move on
+                    db.log_event(self.conn, "ERROR", f"backfill: {exc}")
+                if i % 100 == 0:
+                    self.conn.commit()
+                if i % progress_every == 0:
+                    rate = i / max(time.time() - t0, 1e-9)
+                    eta = (len(jobs) - i) / max(rate, 1e-9)
+                    print(f"  {i}/{len(jobs)} requests ({rate:.1f}/s, ~{eta / 60:.0f} min left) "
+                          f"{self.stats}", flush=True)
         self.conn.commit()
         self.rest.close()
         return self.stats

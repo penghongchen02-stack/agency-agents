@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
@@ -33,12 +34,15 @@ class _RateLimiter:
     def __init__(self, rps: float) -> None:
         self._interval = 1.0 / rps
         self._next = 0.0
+        self._lock = threading.Lock()      # safe to share across worker threads
 
     def wait(self) -> None:
-        now = time.monotonic()
-        if now < self._next:
-            time.sleep(self._next - now)
-        self._next = max(now, self._next) + self._interval
+        with self._lock:
+            now = time.monotonic()
+            slot = max(now, self._next)
+            self._next = slot + self._interval
+        if slot > now:
+            time.sleep(slot - now)
 
 
 class RestClient:

@@ -42,7 +42,8 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--assets", default="btc")
     bf.add_argument("--horizons", default="15m,1h")
     bf.add_argument("--days", type=float, default=45)
-    bf.add_argument("--rps", type=float, default=8.0, help="max requests/second (public limit 20)")
+    bf.add_argument("--rps", type=float, default=12.0, help="max requests/second (public limit 20)")
+    bf.add_argument("--workers", type=int, default=8, help="parallel requests in flight")
     st = sub.add_parser("study", help="test the late-window leader strategy on backfilled data")
     st.add_argument("--db", type=Path, default=DEFAULT_DB)
     st.add_argument("--theta", type=float, default=0.095, help="taker fee coefficient (Tier 1 = 0.095)")
@@ -78,7 +79,8 @@ def main(argv: list[str] | None = None) -> int:
         from .backfill import Backfill
         args.db.parent.mkdir(parents=True, exist_ok=True)
         b = Backfill(db.connect(args.db), assets=tuple(args.assets.split(",")),
-                     horizons=tuple(args.horizons.split(",")), days=args.days, rps=args.rps)
+                     horizons=tuple(args.horizons.split(",")), days=args.days, rps=args.rps,
+                     workers=args.workers)
         print(f"Done: {b.run()}")
         return 0
     if not args.db.exists():
