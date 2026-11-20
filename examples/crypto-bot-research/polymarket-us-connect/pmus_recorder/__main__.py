@@ -71,6 +71,14 @@ def main(argv: list[str] | None = None) -> int:
     se.add_argument("--delays", default="60,50",
                     help="price delay to score at, then a pessimistic (shorter) one; measured: 60")
     se.add_argument("--json", action="store_true")
+    hu = sub.add_parser("hunt", help="keep backfilling and searching until a variation meets the target")
+    hu.add_argument("--db", type=Path, default=DEFAULT_DB)
+    hu.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "hunt")
+    hu.add_argument("--cap", type=int, default=50, help="max contracts per trade")
+    hu.add_argument("--target", type=float, default=100.0, help="dollars per day")
+    hu.add_argument("--interval", type=float, default=3600, help="seconds between rounds")
+    hu.add_argument("--rounds", type=int, help="stop after this many rounds")
+    hu.add_argument("--keep-going", action="store_true", help="keep hunting after the target is met")
     de = sub.add_parser("dashboard-export", help="write per-bot backtest + paper results as JSON")
     de.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
     de.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "bots.json")
@@ -119,6 +127,11 @@ def main(argv: list[str] | None = None) -> int:
         stats = PaperTrader(conn, bots=select_bots(args.bots), quote_s=args.quote_s,
                             log=lambda s: print(s, flush=True)).run(args.duration)
         print(f"Stopped: {stats}")
+        return 0
+    if args.cmd == "hunt":
+        from .hunt import run_hunt
+        run_hunt(args.db, args.out, cap=args.cap, target=args.target, interval=args.interval,
+                 keep_going=args.keep_going, max_rounds=args.rounds, log=lambda s: print(s, flush=True))
         return 0
     if not args.db.exists():
         print(f"No recording at {args.db}", file=sys.stderr)
