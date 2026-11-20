@@ -93,3 +93,12 @@ def test_variants_are_causal_and_registered():
     assert legs_longshot_close(m, {"offset": 60, "max_price": 0.2, "max_margin_bps": 3}, 0.095) == legs
     fav = legs_neversmiling_favourite(m, {"offset": 60, "lo": 0.7, "hi": 0.9}, 0.095)
     assert fav == [(t_end - 90, True, 0.85, 1)]
+
+
+def test_dominance_pair_always_pays_at_least_one():
+    from pmus_recorder.strategies_cross import pair_trades
+    for close, a_up, b_up in ((99.0, False, False), (100.5, True, False), (102.0, True, True)):
+        A = {"slug": "a", "horizon": "1h", "ptb": 100.0, "won_up": a_up, "pts": {900: (0.40, 0.61)}}
+        B = {"slug": "b", "horizon": "5m", "ptb": 101.0, "won_up": b_up, "pts": {900: (0.45, 0.50)}}
+        trades = pair_trades({("btc", 1000): [A, B]}, max_cost=1.0)
+        assert len(trades) == 1 and trades[0]["pay"] >= 1     # Up(A) 0.40 + Down(B) 0.50 + fees < 1

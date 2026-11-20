@@ -71,6 +71,11 @@ def main(argv: list[str] | None = None) -> int:
     se.add_argument("--delays", default="60,50",
                     help="price delay to score at, then a pessimistic (shorter) one; measured: 60")
     se.add_argument("--json", action="store_true")
+    ap = sub.add_parser("arb-paper", help="paper-test cross-window arbitrage live (no orders)")
+    ap.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "arb.sqlite")
+    ap.add_argument("--duration", type=float)
+    ar = sub.add_parser("arb-report", help="results of the arbitrage paper test")
+    ar.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "arb.sqlite")
     hu = sub.add_parser("hunt", help="keep backfilling and searching until a variation meets the target")
     hu.add_argument("--db", type=Path, default=DEFAULT_DB)
     hu.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "hunt")
@@ -127,6 +132,16 @@ def main(argv: list[str] | None = None) -> int:
         stats = PaperTrader(conn, bots=select_bots(args.bots), quote_s=args.quote_s,
                             log=lambda s: print(s, flush=True)).run(args.duration)
         print(f"Stopped: {stats}")
+        return 0
+    if args.cmd == "arb-paper":
+        from .arb_paper import ArbPaper
+        args.db.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Arbitrage paper test into {args.db} (no orders; Ctrl-C to stop)", flush=True)
+        print(ArbPaper(db.connect(args.db), log=lambda s: print(s, flush=True)).run(args.duration))
+        return 0
+    if args.cmd == "arb-report":
+        from .arb_paper import arb_report
+        print(arb_report(db.connect(args.db)))
         return 0
     if args.cmd == "hunt":
         from .hunt import run_hunt

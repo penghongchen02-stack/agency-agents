@@ -7,6 +7,8 @@ Each round:
      7 time-of-day filters (any, or one 4-hour UTC block) times 4 volatility filters (any,
      or the low / mid / high third of the index's recent volatility, cut on period A).
      That is 332,640 variations per segment and 3,991,680 across 12 segments.
+     Plus a new family, cross-window arbitrage (strategies_cross.py): pairs that pay >= $1
+     whatever the coin does, bought only when both legs cost < $1 with fees.
   3. Apply the luck checks of search.py, with the Bonferroni bar set for all of them:
      dev = A + B (fixed dates from the first round), positive in A and in B, positive at a
      pessimistic delay, dev z-score (no-edge null) >= bar.
@@ -160,7 +162,38 @@ def hunt_round(conn, state, theta=0.095, min_trades=100, alpha=0.05, delays=(60,
                           "per_day": float(p.sum() / span["forward"]) if span["forward"] > 0 else 0.0,
                           "_pnl": p, "_day": am["day"][sel]}
         cands.append(res)
+    cands += _arb_candidates(conn, state, theta, main, span)
     return {"n_tests": n_tests, "bar": bar, "span_days": span, "candidates": cands, "fits": fits}
+
+
+def _arb_candidates(conn, state, theta, delay, span):
+    """Cross-window arbitrage pairs (strategies_cross.py), one candidate for all coins."""
+    from . import study
+    from .strategies_cross import load_groups, pair_trades
+    study.PRICE_DELAY_S = delay
+    tr = pair_trades(load_groups(conn), theta=theta, max_cost=1.0)
+    if not tr:
+        return []
+    t_end = np.array([t["t_end"] for t in tr])
+    pnl = np.array([t["pnl"] for t in tr])
+    pay = np.array([t["pay"] for t in tr])
+    day = t_end // 86400
+    per = {"dev": t_end < state["cut_b"], "hold": (t_end >= state["cut_b"]) & (t_end <= state["freeze"]),
+           "fwd": t_end > state["freeze"]}
+    zero_pay = int((pay < 1).sum())
+
+    def part(sel, days):
+        p = pnl[sel]
+        return {"n": int(len(p)), "ev": float(p.mean()) if len(p) else None,
+                "z": 99.0 if len(p) and zero_pay == 0 else 0.0, "losses": int((p < 0).sum()),
+                "per_day": float(p.sum() / days) if days > 0 else 0.0, "_pnl": p, "_day": day[sel]}
+    hold = part(per["hold"], span["hold"])
+    return [{"segment": "all coins, paired windows", "family": "cross_window_arb",
+             "config": {"rule": "buy Up on the lower-open market and Down on the higher-open market of the same "
+                                "coin closing at the same instant (opens >= $0.01 apart), when both cost < $1 with fees"},
+             "dev_z": 99.0 if zero_pay == 0 else 0.0, "zero_payout_pairs": zero_pay,
+             "dev": part(per["dev"], (state["cut_b"] - state["cut_a"]) / 86400 * 3),
+             "hold": hold, "hold_pess": hold, "forward": part(per["fwd"], span["forward"])}]
 
 
 def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
@@ -181,6 +214,8 @@ def evaluate_request(res, cap=50, target=100.0, min_forward_days=3):
 
 
 def _cfg_text(c):
+    if "rule" in c:
+        return c["rule"]
     h = "any time" if c["hours"] is None else f"{c['hours'] * 4:02d}-{c['hours'] * 4 + 4:02d} UTC"
     v = "any vol" if c["vol"] is None else f"{c['vol']} vol"
     e = "" if c["edge"] is None else f", model edge >= {c['edge']:.2f}"

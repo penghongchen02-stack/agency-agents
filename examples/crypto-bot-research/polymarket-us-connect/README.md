@@ -167,6 +167,14 @@ This runs all seven strategy bots forward on live data. **Each bot trades all fo
 
 See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md).
 
+**Cross-window arbitrage** (`pmus_recorder/strategies_cross.py`), a new bot family.
+- **How it works:** for one coin, the 5m, 15m and 1h markets that close at the same instant settle on the same index value. Buying Up on the lower-open market and Down on the higher-open market (opens ≥ $0.01 apart) therefore **pays at least $1 whatever happens**.
+- **The trade:** buy the pair only when both legs cost less than $1 with fees.
+- **45-day backtest:** 0 losing pairs. Dev made $1.05/day per contract pair; the holdout made $1.15/day, with every day profitable.
+- **Live check:** `python -m pmus_recorder arb-paper` paper-tests it on live quotes and logs book sizes. `arb-report` summarizes the results.
+
+**Automatic hunt** (`python -m pmus_recorder hunt`). Every hour it backfills new markets and searches 3,991,680 variations under one Bonferroni bar, plus the arbitrage family. It ranks the top 5 in `data/hunt/leaderboard.md`, and stops when the confirmed winners make ≥ $100/day at ≤ 50 contracts on the holdout **and** on ≥ 3 new forward days.
+
 **New variants, running beside the originals.** Each one is built from a bot that lost and targets the reason it lost (`pmus_recorder/strategies_variants.py`). They are tested the same way, appear in `compare`, and each trades all four coins:
 
 | Variant | Built from | Change | 45-day backtest |
