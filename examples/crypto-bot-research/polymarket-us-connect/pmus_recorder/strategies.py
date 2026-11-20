@@ -199,6 +199,10 @@ def compare(conn, theta: float = 0.095, min_trades: int = 30) -> dict:
             seg_out["families"][fam] = {"params": params, "train": tr, "test": te}
         res["segments"][f"{seg[0]} {seg[1]}"] = seg_out
     res["model_calibration"] = calibration_of_model(test_all)   # fitted model, TEST rows only
+    from .strategies_extra import compare_extra
+    for seg, fams in compare_extra(conn, theta=theta, min_trades=min_trades).items():
+        res["segments"].setdefault(seg, {"markets": None, "model_fit": {"k": "-", "basis_bps": "-"},
+                                         "families": {}})["families"].update(fams)
     return res
 
 
@@ -214,7 +218,7 @@ def format_compare(res: dict) -> str:
         for c in res["model_calibration"]:
             L.append(f"  model {c['p_model']:13s} n {c['n']:>6}  predicted {c['avg_model']:.3f}  actual {c['won']:.3f}")
     fits = ", ".join(f"{k}: k={v['model_fit']['k']} basis={v['model_fit']['basis_bps']}bps"
-                     for k, v in res["segments"].items())
+                     for k, v in res["segments"].items() if v.get("model_fit"))
     L.append(f"\nModel fit per segment: {fits}")
     L.append("\nTEST period only (last 1/3 of dates); parameters chosen on the first 2/3")
     L.append(f"  {'segment':10s} {'family':13s} {'params':38s} {'n':>4s} {'win':>6s} {'px':>6s} "
@@ -231,6 +235,7 @@ def format_compare(res: dict) -> str:
                 continue
             L.append(f"  {seg:10s} {fam:13s} {p:38s} {t['n']:>4d} {t['win_rate']:>6.1%} {t['avg_price']:>6.3f} "
                      f"{t['ev']:>+8.4f} {t['total']:>+8.2f}")
-    L.append("\nEV/ct = average P&L per 1-contract trade after the Tier 1 taker fee. 'total' sums them.\n"
+    L.append("\nn = markets traded; win = share of traded markets with positive P&L; px = average price paid;\n"
+             "EV/ct = average P&L per contract after the Tier 1 taker fee; total = sum of P&L (dollars).\n"
              "Limits: display prices have no size; ~1 point per minute; small test samples are noise.")
     return "\n".join(L)

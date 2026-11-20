@@ -169,3 +169,26 @@ def test_compare_runs_on_synthetic(tmp_path):
     assert "btc 15m" in res["segments"]
     fav = res["segments"]["btc 15m"]["families"]["favourite"]
     assert fav["test"]["n"] > 0 and fav["test"]["avg_price"] < 0.99
+
+
+def test_extra_families_on_synthetic():
+    from pmus_recorder.strategies_extra import (simulate_both_sides, simulate_longshot,
+                                                simulate_momentum, simulate_neversmiling)
+    T = 10_000
+    m = {"ws": T - 300, "t_end": T, "won_up": True, "pts": [
+        (T - 240, 0.45, 0.56), (T - 180, 0.60, 0.42), (T - 120, 0.80, 0.21), (T - 60, 0.97, 0.04)]}
+    # legged pair: Up at 0.45, then Down at 0.42 -> pair 0.87 + fees < 1: locked profit
+    n, pnl, _ = simulate_both_sides(m, {"entry": 0.45, "edge": 0.0}, 0.095)
+    assert n == 2 and abs(pnl - (1 - 0.45 - 0.42 - taker_fee(0.45) - taker_fee(0.42))) < 1e-9
+    # longshot at T-60 buys Down at 0.04 and loses it
+    n, pnl, px = simulate_longshot(m, {"offset": 60, "max_price": 0.05}, 0.095)
+    assert n == 1 and px == 0.04 and pnl < 0
+    # momentum: Up rose 0.37 over 2 min to 0.97 -> buy Up, wins
+    n, pnl, px = simulate_momentum(m, {"offset": 60, "lookback_min": 2, "rise": 0.30}, 0.095)
+    assert px == 0.97 and pnl > 0
+    # neversmiling: buys in-band sides inside 10%-90% of the window
+    n, pnl, px = simulate_neversmiling(m, {"tilt": 2}, 0.095)
+    assert n >= 3 and 0.30 <= px <= 0.70
+    # $0.99 is never bought
+    m2 = {"ws": T - 300, "t_end": T, "won_up": True, "pts": [(T - 60, 0.99, 0.01)]}
+    assert simulate_momentum(m2, {"offset": 60, "lookback_min": 1, "rise": 0.0}, 0.095) is None
