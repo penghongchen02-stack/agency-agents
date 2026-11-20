@@ -46,14 +46,14 @@ def main(argv: list[str] | None = None) -> int:
     bf.add_argument("--workers", type=int, default=8, help="parallel requests in flight")
     st = sub.add_parser("study", help="test the late-window leader strategy on backfilled data")
     st.add_argument("--db", type=Path, default=DEFAULT_DB)
-    st.add_argument("--price-delay", type=int, default=90,
-                    help="seconds a /v1/price-history point lags its timestamp (measured: 90)")
+    st.add_argument("--price-delay", type=int, default=60,
+                    help="seconds a /v1/price-history point lags its timestamp (measured: 60)")
     st.add_argument("--theta", type=float, default=0.095, help="taker fee coefficient (Tier 1 = 0.095)")
     st.add_argument("--json", action="store_true")
     cp = sub.add_parser("compare", help="compare strategy families per asset/horizon (walk-forward)")
     cp.add_argument("--db", type=Path, default=DEFAULT_DB)
-    cp.add_argument("--price-delay", type=int, default=90,
-                    help="seconds a /v1/price-history point lags its timestamp (measured: 90)")
+    cp.add_argument("--price-delay", type=int, default=60,
+                    help="seconds a /v1/price-history point lags its timestamp (measured: 60)")
     cp.add_argument("--theta", type=float, default=0.095)
     cp.add_argument("--json", action="store_true")
     pp = sub.add_parser("paper", help="paper-trade the 7 bots live on their best coin/window (no orders)")
@@ -62,6 +62,12 @@ def main(argv: list[str] | None = None) -> int:
     pp.add_argument("--quote-s", type=float, default=3.0, help="seconds between quote polls per market")
     pr = sub.add_parser("paper-report", help="paper-trading results per bot vs the backtest")
     pr.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
+    se = sub.add_parser("search", help="luck-resistant search over many strategy variations")
+    se.add_argument("--db", type=Path, default=DEFAULT_DB)
+    se.add_argument("--min-trades", type=int, default=100)
+    se.add_argument("--delays", default="60,50",
+                    help="price delay to score at, then a pessimistic (shorter) one; measured: 60")
+    se.add_argument("--json", action="store_true")
     de = sub.add_parser("dashboard-export", help="write per-bot backtest + paper results as JSON")
     de.add_argument("--db", type=Path, default=DEFAULT_DB.parent / "paper.sqlite")
     de.add_argument("--out", type=Path, default=DEFAULT_DB.parent / "bots.json")
@@ -114,6 +120,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("compare", "study"):
         from . import study as _study
         _study.PRICE_DELAY_S = args.price_delay
+    if args.cmd == "search":
+        import json
+        from .backfill import SCHEMA
+        from .search import format_search, run_search
+        conn = db.connect(args.db)
+        conn.executescript(SCHEMA)
+        res = run_search(conn, min_trades=args.min_trades,
+                         delays=tuple(int(x) for x in args.delays.split(",")))
+        print(json.dumps(res, indent=2, default=str) if args.json else format_search(res), flush=True)
+        return 0
     if args.cmd == "compare":
         import json
         from .backfill import SCHEMA

@@ -40,8 +40,9 @@ MIN_PRICE = 0.50
 # therefore moved to ts + PRICE_DELAY_S, and each decision is made AT that moment, using index
 # data only up to then. A delay set too short peeks ahead; one set too long trades a stale
 # quote against a fresher index. Both inflate profits, so run `compare --price-delay` at
-# 60/90/120 and trust only results that hold at the measured value (90 s).
-PRICE_DELAY_S = 90
+# 50/60/90 and trust only results that hold at the measured value (60 s). The 90 s from the
+# index lead-lag test was wrong: the public index candles themselves run ~30 s behind the market.
+PRICE_DELAY_S = 60       # measured directly against live quotes (see RESULTS-2026-11-20-search.md)
 
 
 def decision_point(pts, target, max_age=60):

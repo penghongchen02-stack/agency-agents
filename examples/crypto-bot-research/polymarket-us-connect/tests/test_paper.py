@@ -40,16 +40,16 @@ def _trader(bots, quotes, close=101.0):
     return pt, rest
 
 
-def test_index_bot_buys_leader_at_t_minus_90_and_settles():
+def test_index_bot_buys_leader_at_t_minus_60_and_settles():
     bot = Bot("favourite", "btc", "5m", {"offset": 60, "margin_bps": 5, "max_price": 0.95}, 0.0)
     pt, rest = _trader([bot], lambda: (0.89, 0.90))
     t_end = 1_800_000_000                                   # a minute boundary
     m = pt._track("m1", "btc", "5m", t_end - 300, t_end, 100.0)
-    pt.ticks["btc"] = {t: 100.2 for t in range(t_end - 400, t_end - 85)}   # 20 bps above the open
+    pt.ticks["btc"] = {t: 100.2 for t in range(t_end - 400, t_end - 55)}   # 20 bps above the open
     for now in range(t_end - 300, t_end + 1, 3):            # quotes every 3 s through the window
         pt.poll_quote(m, now)
     trades = pt.conn.execute("SELECT bot, ts, side, price FROM paper_trades").fetchall()
-    assert trades == [("favourite", t_end - 90, "UP", 0.90)]
+    assert trades == [("favourite", t_end - 60, "UP", 0.90)]     # minute point at :00 -> T-60
     rest.resolved = True
     pt.check_settlement(m)
     pnl = pt.conn.execute("SELECT pnl FROM paper_trades").fetchone()[0]
@@ -77,9 +77,9 @@ def test_live_legs_match_the_backtest_simulator():
 def test_variants_are_causal_and_registered():
     from pmus_recorder.paper import ALL_LEGS, BOTS
     from pmus_recorder.strategies_variants import legs_longshot_close, legs_neversmiling_favourite
-    assert all(b.name in ALL_LEGS or b.name in ("favourite", "model_edge", "disagreement", "model_edge_strict")
-               for b in BOTS)
-    assert {b.name for b in BOTS if b.variant_of} == {
+    from pmus_recorder.paper import INDEX_FAMILIES
+    assert all(b.name in ALL_LEGS or b.name in INDEX_FAMILIES for b in BOTS)
+    assert {b.name for b in BOTS if b.variant_of and b.variant_of != "search"} == {
         "model_edge_strict", "both_sides_strict", "neversmiling_favourite",
         "longshot_close", "momentum_confirmed", "momentum_fade"}
     t_end = 2000

@@ -12,7 +12,8 @@ Live public data (no API key):
   * settlement index: 1 s BRTI candles from `/v1/asset-prices/history`, as they publish.
 
 Same timing as the backtest: quotes are polled every few seconds, and one "minute point" is
-kept at second :30 of each minute (the backtest's points were really seen at :30). Price-only
+kept at second :00 of each minute (measured against live quotes, a price-history point is the
+quote 60 s after its timestamp, i.e. at :00). Price-only
 bots read the minute points; index bots decide at the latest minute point at or before
 T - offset, with whatever index candles had arrived by then (the live index lag is logged).
 
@@ -36,7 +37,8 @@ from .strategies import _select, _sigma, model_probability
 from .strategies_extra import LEGS
 from .strategies_variants import VARIANTS
 
-INDEX_FAMILIES = ("favourite", "model_edge", "disagreement", "model_edge_strict")
+INDEX_FAMILIES = ("favourite", "model_edge", "disagreement", "model_edge_strict", "hourly_leader")
+MARK_SECOND = 0          # second of each minute at which the bots' minute point is taken
 ALL_LEGS = {**LEGS, **{name: legs for name, (legs, _) in VARIANTS.items()}}
 
 
@@ -84,6 +86,11 @@ BOTS = (
     Bot("neversmiling", "eth", "1h", {"tilt": 1}, -0.1460),
     Bot("neversmiling", "sol", "1h", {"tilt": 1}, -0.1383),
     Bot("neversmiling", "xrp", "1h", {"tilt": 1}, -0.0862),
+    # ---- search winners (pmus_recorder.search, 60 s delay): passed every luck check ----
+    Bot("hourly_leader", "sol", "1h", {"offset": 60, "lo": 0.02, "hi": 0.98, "margin_bps": 5.0, "edge": None},
+        +0.0881, k=1.0, basis_bps=5.0, variant_of="search"),
+    Bot("hourly_leader", "xrp", "1h", {"offset": 60, "lo": 0.02, "hi": 0.98, "margin_bps": 5.0, "edge": 0.0},
+        +0.0835, k=10.0, basis_bps=0.0, variant_of="search"),
     # ---- variants: NEW bots built from the originals (the originals keep running) ----
     Bot("model_edge_strict", "btc", "5m", {"offset": 60, "edge": 0.03}, +0.0475, k=10.0, basis_bps=2.0, variant_of="model_edge"),
     Bot("model_edge_strict", "eth", "5m", {"offset": 60, "edge": 0.03}, +0.0808, k=12.0, basis_bps=1.0, variant_of="model_edge"),
@@ -122,7 +129,7 @@ CREATE TABLE IF NOT EXISTS paper_points (            -- minute points the bots r
 CREATE TABLE IF NOT EXISTS paper_index (asset TEXT, ts INTEGER, close REAL, PRIMARY KEY (asset, ts));
 CREATE TABLE IF NOT EXISTS paper_trades (
     bot TEXT, slug TEXT, ts INTEGER, side TEXT, price REAL, contracts REAL, fee REAL,
-    decided_at REAL, index_age_s REAL, note TEXT, outcome TEXT, pnl REAL,
+    decided_at REAL, index_age_s REAL, note TEXT, outcome TEXT, pnl REAL, book_qty REAL,
     PRIMARY KEY (bot, slug, ts, side));
 CREATE TABLE IF NOT EXISTS paper_decisions (         -- index bots: one row per market, traded or not
     bot TEXT, slug TEXT, ts INTEGER, leader TEXT, price REAL, margin_bps REAL, p_model REAL,
@@ -164,6 +171,8 @@ class PaperTrader:
                  rps: float = 10.0, log=print) -> None:
         self.conn, self.bots, self.theta, self.log = conn, list(bots), theta, log
         conn.executescript(SCHEMA)
+        if "book_qty" not in {r[1] for r in conn.execute("PRAGMA table_info(paper_trades)")}:
+            conn.execute("ALTER TABLE paper_trades ADD COLUMN book_qty REAL")   # older databases
         self.rest = rest or RestClient(None, rps=rps)
         self.quote_s, self.history_s = quote_s, history_s
         self.pairs = {(b.asset, b.horizon) for b in self.bots}
@@ -251,8 +260,8 @@ class PaperTrader:
             self.conn.execute("UPDATE paper_markets SET price_to_beat=? WHERE slug=?", (ptb, m.slug))
         self.conn.execute("INSERT INTO paper_quotes VALUES (?,?,?,?,?)", (m.slug, now, bid, ask, r.elapsed_ms))
         self.stats["quotes"] += 1
-        # one minute point per minute, at the first quote from second :30 on
-        mark = int(now // 60 * 60 + 30)
+        # one minute point per minute, at the first quote from second :00 on
+        mark = int(now // 60 * 60 + MARK_SECOND)
         if now >= mark and (not m.pts or m.pts[-1][0] < mark) and now - mark < 30:
             up = ask if ask is not None else 0.99
             down = round(1 - bid, 4) if bid is not None else 0.99
@@ -310,11 +319,30 @@ class PaperTrader:
             note = f"margin {row['margin_bps']:.1f} bps" + (f", model {p_model:.3f}" if p_model else "")
             self._trade(b, m, ts, leader, price, 1, now, age, note)
 
+    def _book_qty(self, m: Live, side: str, price: float):
+        """Contracts offered at or better than `price` on `side` in the public book (CDN-cached
+        up to 30 s, so a rough size check only)."""
+        r = self.rest.public_get(f"/v1/markets/{m.slug}/book")
+        if r.status != 200 or not isinstance(r.json, dict):
+            return None
+        md = r.json.get("marketData") or {}
+        if side == "UP":
+            return sum(_f(l.get("qty")) or 0 for l in md.get("offers") or [] if (_f(l.get("px")) or 9) <= price + 1e-9)
+        return sum(_f(l.get("qty")) or 0 for l in md.get("bids") or [] if (_f(l.get("px")) or -9) >= 1 - price - 1e-9)
+
     def _trade(self, b, m, ts, side, price, q, now, age, note) -> None:
         fee = q * taker_fee(price, theta=self.theta)
+        depth = None
+        if b.name in INDEX_FAMILIES:
+            try:
+                depth = self._book_qty(m, side, price)
+            except Exception:
+                depth = None
+            if depth is not None:
+                note = (note + ", " if note else "") + f"book {depth:g} ct (<=30 s old)"
         self.conn.execute("INSERT OR IGNORE INTO paper_trades(bot, slug, ts, side, price, contracts, fee, "
-                          "decided_at, index_age_s, note) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                          (b.name, m.slug, ts, side, price, q, fee, now, age, note))
+                          "decided_at, index_age_s, note, book_qty) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                          (b.name, m.slug, ts, side, price, q, fee, now, age, note, depth))
         self.stats["trades"] += 1
         self.log(f"PAPER BUY  {b.name:12s} {m.slug}  {side:4s} x{q:g} @ {price:.2f}  "
                  f"(T-{m.t_end - ts}s{', ' + note if note else ''})")

@@ -131,7 +131,7 @@ Limits:
 
 Treat a positive result as a reason to test with live books and tiny size, not as proof of profit.
 
-**Price timestamps run about 90 s early.** A lead-lag test against the settlement index shows that a `/v1/price-history` point reflects the market about 90 s after its timestamp. The tools therefore treat each point as known at `timestamp + --price-delay` (default 90) and decide at that moment.
+**Price timestamps run 60 s early** (measured directly against live quotes; an earlier 90 s estimate was wrong, see [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md)). A lead-lag test against the settlement index shows that a `/v1/price-history` point reflects the market about 90 s after its timestamp. The tools therefore treat each point as known at `timestamp + --price-delay` (default 60) and decide at that moment.
 
 **Results:** see [RESULTS-2026-11-20-all-strategies.md](RESULTS-2026-11-20-all-strategies.md), covering 45,932 markets, 4 coins, 3 window lengths and 7 strategy families.
 - **Losers:** both-sides, NeverSmiling-style, long-shot and momentum lose after fees under every timing assumption.
@@ -159,6 +159,13 @@ This runs all seven strategy bots forward on live data. **Each bot trades all fo
 | neversmiling | 1h | 1h | 1h | 1h | −9.7¢ |
 
 `paper-report` shows each bot with all coins combined, then each coin separately.
+
+**Variation search** (`python -m pmus_recorder search`). It tries 142,560 variations under luck-resistant rules: time-split holdout, both halves profitable, a pessimistic delay check, and a Bonferroni bar.
+- **Only two pass:** **hourly SOL and XRP leaders, 60 s before close.** On the holdout they made 240 trades with 0 losses, at about +8.5¢ per contract.
+- **Together that is about $2.27 a day per contract,** so $100–200 a day needs 44–88 contracts per trade, if the book has them.
+- They paper-trade as `hourly_leader` and log the book size at each buy.
+
+See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md).
 
 **New variants, running beside the originals.** Each one is built from a bot that lost and targets the reason it lost (`pmus_recorder/strategies_variants.py`). They are tested the same way, appear in `compare`, and each trades all four coins:
 

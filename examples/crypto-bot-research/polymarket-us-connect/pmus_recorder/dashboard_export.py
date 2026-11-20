@@ -34,8 +34,8 @@ def export_rows(conn: sqlite3.Connection, bots=BOTS) -> list[dict]:
         total = sum(t[2] for t in done)
         rows.append({
             "bot": b.name,
-            "kind": "Variant" if b.variant_of else "Original",
-            "built_from": b.variant_of or "",
+            "kind": "Search winner" if b.variant_of == "search" else "Variant" if b.variant_of else "Original",
+            "built_from": "" if b.variant_of == "search" else b.variant_of,
             "coin": b.asset.upper(),
             "window": b.horizon,
             "settings": _settings(b.params),
@@ -61,7 +61,8 @@ def export(db: Path, out: Path) -> dict:
         {"label": "Paper data from", "value": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(first)) if first else "none"},
         {"label": "Paper data to", "value": time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(last)) if last else "none"},
         {"label": "Backtest", "value": "45-day walk-forward, test period = last 1/3, 90 s price delay "
-                                       "(RESULTS-2026-11-20-all-strategies.md)"},
+                                       "(RESULTS-2026-11-20-all-strategies.md); search winners: 60 s delay, holdout = last 25% "
+                                       "(RESULTS-2026-11-20-search.md)"},
     ]}
     out.write_text(json.dumps(doc, indent=1))
     return doc

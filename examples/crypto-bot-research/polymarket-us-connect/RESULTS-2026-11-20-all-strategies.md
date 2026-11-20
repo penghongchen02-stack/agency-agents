@@ -1,5 +1,9 @@
 # Seven Strategy Families Compared (public Polymarket US data, 2026-11-20)
 
+> **Correction.** A later direct check against live quotes showed the price delay is **60 s, not 90 s**. The 90 s figures below overstate the index-following bots; at 60 s most of them lose.
+>
+> See [RESULTS-2026-11-20-search.md](RESULTS-2026-11-20-search.md). The losing price-only families (both-sides, NeverSmiling, long-shot, momentum) are unaffected.
+
 **Data:**
 - 45,932 resolved Up/Down markets over 45 days: BTC, ETH, SOL and XRP, in 5m, 15m and 1h windows.
 - 342,089 stored display-price points and 5.8 million one-second settlement-index candles.

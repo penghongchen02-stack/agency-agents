@@ -129,6 +129,10 @@ def _select(rows, family, params, theta):
             ok = 0.50 <= p <= params["max_price"] and r["margin_bps"] >= params["margin_bps"]
         elif family in ("model_edge", "model_edge_strict"):
             ok = r["p_model"] is not None and 0.50 <= p <= 0.98 and r["p_model"] - p - taker_fee(p, theta=theta) >= params["edge"]
+        elif family == "hourly_leader":   # search winner: leader in a price band, margin, optional edge
+            ok = (params["lo"] <= p <= params["hi"] and r["margin_bps"] >= params["margin_bps"]
+                  and (params.get("edge") is None
+                       or (r["p_model"] is not None and r["p_model"] - p - taker_fee(p, theta=theta) >= params["edge"])))
         else:  # disagreement
             ok = params["min_price"] <= p < 0.50 and r["margin_bps"] >= params["margin_bps"]
         if ok:
