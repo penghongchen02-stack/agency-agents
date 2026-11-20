@@ -72,6 +72,36 @@ pip install -r requirements-dev.txt && python -m pytest -q tests
 
 With a dummy key the server answers `401 API key not found`. That confirms the signed headers are well-formed and only a real key is missing.
 
+## Data recorder (`pmus_recorder`)
+
+Records what the [recommended late-window strategy](../README.md) needs to test itself. It uses public endpoints only, needs no key, and never trades.
+
+| Data | Source | Cadence |
+|---|---|---|
+| Up/Down windows (slug, window, `priceToBeat`) | `GET /v1/markets?categories=crypto` | Every 30 s |
+| Order book, top 10 levels each side | `GET /v1/markets/{slug}/book` | 10 s, then **1 s in the final 180 s** |
+| Settlement index (BRTI), 1-second candles | `GET /v1/asset-prices/history` | Every 10 s, with gaps backfilled |
+| Settlement (index close plus contract payout) | `/v1/market/slug/{slug}`, `/v1/markets/{slug}/settlement` | After close, until published |
+
+```bash
+python -m pmus_recorder record                                 # BTC 15m + 1h, until Ctrl-C
+python -m pmus_recorder record --assets btc,eth --horizons 5m,15m,1h --duration 86400
+python -m pmus_recorder report                                 # coverage + late-window table
+```
+
+Data goes to `data/pmus.sqlite` (git-ignored). Restarting resumes unsettled markets. Run it on a server with `nohup` or as a systemd service for 1–2 weeks.
+
+The **report** shows:
+- **Coverage:** markets, snapshots, ticks, errors, and API latency.
+- **Settlement reproduction:** recomputes each official close from the recorded 60-second index average. If the error is not about 0, the data can't support the strategy.
+- **Late-window leader study:** for each 30-second bucket before close:
+  - how often the side leading on the projected 60-second average actually won
+  - how often it could be bought at $0.98 or less
+  - the average price
+  - a **naive** EV per contract after the taker fee
+
+  The naive EV assumes perfect fills, so it is an upper bound and not a backtest.
+
 ## Polymarket US facts that matter for any future bot
 
 These differ from the international Polymarket that the [research](../README.md) studied:
