@@ -73,6 +73,27 @@ Robustness checks on the same data:
 - winner-lock never fired. Late in the window, the market already prices the favourite
   at or above what our model thinks it's worth.
 
+**Bigger run: 3000 markets (2026-11-10 → 2026-11-21, 10.5 days):** fair-value −9.7%
+(311 buys), twap-scratch −10.4% (182 buys), winner-lock no trades. Brier: model 0.1396
+vs market 0.1286.
+
+**Tried to improve the model. Nothing beat the market on unseen data.** Each idea was
+tuned on the older 70% of the 3000 markets and judged on the newest 30%. Market Brier
+on that test set is 0.1246:
+
+| Idea | Test Brier | Verdict |
+|---|---|---|
+| Current model | 0.1348 | worse than market |
+| Re-tuned volatility and lag correction | 0.1345 | no real change |
+| Blend of model and market price | 0.1252 | still worse than market alone |
+| Recover the live price from the 60s-averaged feed (1000-market set) | 0.1423 vs market 0.1264 | worse |
+
+The market is also well calibrated at every price level: when it says 75%, Up wins
+about 76% of the time. Down won 53% of these markets, but only because BTC fell 20%
+(73,583 → 58,390), and the market had already priced that in (Up at about 48%).
+The likely reason the market wins: its traders see live exchange prices and order flow,
+and Polymarket's public BRTI feed (a 60s average) is about 30s behind.
+
 **What this means:** the strategies run correctly end to end, but on this data the
 Polymarket US book prices BTC 5-minute windows better than this model. Every edge the
 bot "found" was mostly the market knowing something the model didn't. Don't go live on
