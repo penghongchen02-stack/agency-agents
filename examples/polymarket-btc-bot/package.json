@@ -1,0 +1,29 @@
+{
+  "name": "polymarket-btc-bot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Transparent, paper-first BTC Up/Down 5-minute bot for Polymarket. No binaries, no hidden code.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.12"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "report": "tsx src/report.ts",
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@polymarket/clob-client-v2": "1.3.1",
+    "@polymarket/real-time-data-client": "1.4.0",
+    "viem": "2.58.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "ws": "8.23.0"
+  }
+}

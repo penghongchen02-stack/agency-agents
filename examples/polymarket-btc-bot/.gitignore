@@ -1,0 +1,7 @@
+node_modules/
+.env
+state/
+STOP
+
+# Commit the lockfile: exact, reviewed dependency versions are part of the security model.
+!package-lock.json
