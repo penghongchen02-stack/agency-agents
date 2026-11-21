@@ -448,3 +448,17 @@ test("describeConfig never prints any credential", () => {
   );
   assert.ok(!out.includes(usSecret) && !out.includes(keyId));
 });
+
+// ── ETH and hourly support ────────────────────────────────────────────────────
+
+test("ETH and 1h markets: slugs, windows and scaled default timings", () => {
+  const t = Date.UTC(2026, 10, 21, 13, 0) / 1000;
+  assert.equal(usSlugFor(t, "5m", "eth"), "cpceth-eth-updown-5m-2026-11-21-1300z");
+  assert.equal(usSlugFor(t, "1h", "btc"), "cpc-btc-updown-1h-2026-11-21-1300z");
+  const c5 = loadConfig({});
+  assert.deepEqual([c5.asset, c5.entryStartSec, c5.entryEndSec, c5.wlLastSec], ["btc", 30, 240, 60]);
+  const c1h = loadConfig({ MARKET_ASSET: "eth", MARKET_WINDOW: "1h" });
+  assert.deepEqual([c1h.asset, c1h.slotSeconds, c1h.entryStartSec, c1h.entryEndSec, c1h.wlLastSec], ["eth", 3600, 360, 2880, 720]);
+  assert.throws(() => loadConfig({ MARKET_ASSET: "doge" }), /MARKET_ASSET/);
+  assert.throws(() => loadConfig({ VENUE: "global", MARKET_ASSET: "eth" }), /VENUE=global/);
+});

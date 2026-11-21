@@ -10,6 +10,7 @@
  */
 import { RealTimeDataClient, type Message } from "@polymarket/real-time-data-client";
 import { log, warn } from "./log.js";
+import type { Asset } from "./config.js";
 import type { UsGateway } from "./usVenue.js";
 
 export interface Tick {
@@ -159,7 +160,7 @@ export function startChainlinkFeed(tape: PriceTape): { stop: () => void } {
  * Polls CF Benchmarks BRTI (the index Polymarket US settles on) from Polymarket US's
  * public asset-prices endpoint, once a second. Only completed seconds are used.
  */
-export function startBrtiFeed(tape: PriceTape, gw: UsGateway, everyMs = 1000): { stop: () => void } {
+export function startBrtiFeed(tape: PriceTape, gw: UsGateway, asset: Asset = "btc", everyMs = 1000): { stop: () => void } {
   let stopped = false;
   let failures = 0;
   let announced = false;
@@ -167,10 +168,10 @@ export function startBrtiFeed(tape: PriceTape, gw: UsGateway, everyMs = 1000): {
     while (!stopped) {
       try {
         const nowSec = Math.floor(Date.now() / 1000);
-        const ticks = await gw.brti(nowSec - 90, nowSec);
+        const ticks = await gw.brti(nowSec - 90, nowSec, asset);
         for (const t of ticks) if (t.tsMs < nowSec * 1000) tape.push(t);
         if (!announced && ticks.length) {
-          log("price feed connected (CF Benchmarks BRTI via Polymarket US)");
+          log(`price feed connected (CF Benchmarks ${asset === "eth" ? "ETHUSD_RTI" : "BRTI"} via Polymarket US)`);
           announced = true;
         }
         failures = 0;

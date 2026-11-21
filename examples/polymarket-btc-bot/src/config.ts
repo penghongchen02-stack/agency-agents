@@ -8,16 +8,19 @@ export const LIVE_CONFIRM_PHRASE = "I accept the risk of losing this money";
 
 export type Mode = "paper" | "live";
 export type StrategyName = "fair-value" | "twap-scratch" | "winner-lock";
-export type MarketWindow = "5m" | "15m";
+export type MarketWindow = "5m" | "15m" | "1h";
+export type Asset = "btc" | "eth";
 export type Venue = "us" | "global";
 
-export const WINDOW_SECONDS: Record<MarketWindow, number> = { "5m": 300, "15m": 900 };
+export const WINDOW_SECONDS: Record<MarketWindow, number> = { "5m": 300, "15m": 900, "1h": 3600 };
 
 export interface Config {
   mode: Mode;
   /** "us" = Polymarket US (CFTC-regulated, polymarket.us). "global" = polymarket.com. */
   venue: Venue;
   strategy: StrategyName;
+  /** Which coin's Up/Down markets to trade. */
+  asset: Asset;
   marketWindow: MarketWindow;
   slotSeconds: number;
 
@@ -124,14 +127,18 @@ function band(lo: number, hi: number, what: string): void {
 export function loadConfig(env: Env = process.env): Config {
   const mode = oneOf(env, "MODE", "paper", ["paper", "live"] as const);
   const venue = oneOf(env, "VENUE", "us", ["us", "global"] as const);
-  const marketWindow = oneOf(env, "MARKET_WINDOW", "5m", ["5m", "15m"] as const);
+  const marketWindow = oneOf(env, "MARKET_WINDOW", "5m", ["5m", "15m", "1h"] as const);
+  const asset = oneOf(env, "MARKET_ASSET", "btc", ["btc", "eth"] as const);
   const slot = WINDOW_SECONDS[marketWindow];
+  // Default timings scale with the window (5m: 30–240s, 15m: 90–720s, 1h: 6–48 min).
+  const at = (frac: number, min = 0) => Math.max(min, Math.round(slot * frac));
   const stakeUsd = num(env, "STAKE_USD", 5, 1, 10_000);
 
   const cfg: Config = {
     mode,
     venue,
     strategy: oneOf(env, "STRATEGY", "fair-value", ["fair-value", "twap-scratch", "winner-lock"] as const),
+    asset,
     marketWindow,
     slotSeconds: slot,
 
@@ -151,18 +158,18 @@ export function loadConfig(env: Env = process.env): Config {
 
     maxEntryPrice: num(env, "MAX_ENTRY_PRICE", 0.8, 0.01, 0.99),
     minEntryPrice: num(env, "MIN_ENTRY_PRICE", 0.2, 0.01, 0.99),
-    entryStartSec: num(env, "ENTRY_START_SEC", 30, 0, slot - 1),
-    entryEndSec: num(env, "ENTRY_END_SEC", Math.min(240, slot - 1), 1, slot - 1),
+    entryStartSec: num(env, "ENTRY_START_SEC", at(0.1), 0, slot - 1),
+    entryEndSec: num(env, "ENTRY_END_SEC", at(0.8), 1, slot - 1),
 
     twapWindowSec: num(env, "TWAP_WINDOW_SEC", 30, 1, 300),
     rescoreSec: num(env, "RESCORE_SEC", 15, 1, 120),
-    scratchEntryStartSec: num(env, "SCRATCH_ENTRY_START_SEC", 5, 0, slot - 1),
-    scratchEntryEndSec: num(env, "SCRATCH_ENTRY_END_SEC", 150, 1, slot - 1),
+    scratchEntryStartSec: num(env, "SCRATCH_ENTRY_START_SEC", at(1 / 60, 5), 0, slot - 1),
+    scratchEntryEndSec: num(env, "SCRATCH_ENTRY_END_SEC", at(0.5), 1, slot - 1),
     scratchMinPrice: num(env, "SCRATCH_MIN_PRICE", 0.45, 0.01, 0.99),
     scratchMaxPrice: num(env, "SCRATCH_MAX_PRICE", 0.55, 0.01, 0.99),
     scratchExitProb: num(env, "SCRATCH_EXIT_PROB", 0.5, 0.01, 0.99),
 
-    wlLastSec: num(env, "WL_LAST_SEC", 60, 5, slot - 1),
+    wlLastSec: num(env, "WL_LAST_SEC", at(0.2), 5, slot - 1),
     wlMinPrice: num(env, "WL_MIN_PRICE", 0.9, 0.5, 0.99),
     wlMaxPrice: num(env, "WL_MAX_PRICE", 0.96, 0.5, 0.99),
     wlMinEdge: num(env, "WL_MIN_EDGE", 0.01, 0, 0.5),
@@ -187,6 +194,9 @@ export function loadConfig(env: Env = process.env): Config {
   band(cfg.scratchEntryStartSec, cfg.scratchEntryEndSec, "SCRATCH_ENTRY_START/END_SEC");
   band(cfg.wlMinPrice, cfg.wlMaxPrice, "WL_MIN/MAX_PRICE");
   if (cfg.maxSlotUsd < cfg.stakeUsd) throw new Error("MAX_SLOT_USD must be at least STAKE_USD");
+  if (cfg.venue === "global" && (cfg.asset !== "btc" || cfg.marketWindow === "1h")) {
+    throw new Error("VENUE=global supports only MARKET_ASSET=btc with MARKET_WINDOW=5m or 15m");
+  }
 
   if (cfg.mode === "live") {
     if ((env.LIVE_CONFIRM ?? "").trim() !== LIVE_CONFIRM_PHRASE) {

@@ -3,7 +3,9 @@
  * No authentication is needed for anything in this file.
  *
  * Facts this relies on (docs.polymarket.us, checked against live responses):
- *  - BTC Up/Down market slugs: `cpc-btc-updown-5m-YYYY-MM-DD-HHMMz` (window start, UTC).
+ *  - Up/Down market slugs: `cpc-btc-updown-5m-YYYY-MM-DD-HHMMz` (BTC) and
+ *    `cpceth-eth-updown-5m-…` (ETH); windows 5m, 15m and 1h; time = window start, UTC.
+ *    BTC settles on CF Benchmarks BRTI, ETH on CF Benchmarks ETHUSD_RTI (same method).
  *  - One instrument per market: YES = Up (long), NO = Down (short). The book is the
  *    YES book. Prices always refer to YES; NO price = 1 − YES price.
  *  - Settlement: CF Benchmarks BRTI, the average of the 60 one-second prices in [T−60s, T).
@@ -15,7 +17,7 @@
  *  - Resolved markets have status MARKET_STATUS_RESOLVED and outcomePrices ["1","0"] (Up won)
  *    or ["0","1"] (Down won). Ties settle Up.
  */
-import type { MarketWindow } from "./config.js";
+import type { Asset, MarketWindow } from "./config.js";
 import { WINDOW_SECONDS } from "./config.js";
 import type { SlotMarket, Winner } from "./markets.js";
 import type { Quote } from "./model.js";
@@ -24,9 +26,11 @@ import type { Venue } from "./venue.js";
 
 export const US_FEED_SMOOTHING_SEC = 60;
 
-export function usSlugFor(slotStart: number, window: MarketWindow = "5m"): string {
+const SLUG_PREFIX: Record<Asset, string> = { btc: "cpc-btc", eth: "cpceth-eth" };
+
+export function usSlugFor(slotStart: number, window: MarketWindow = "5m", asset: Asset = "btc"): string {
   const d = new Date(slotStart * 1000).toISOString(); // 2026-11-21T12:05:00.000Z
-  return `cpc-btc-updown-${window}-${d.slice(0, 10)}-${d.slice(11, 13)}${d.slice(14, 16)}z`;
+  return `${SLUG_PREFIX[asset]}-updown-${window}-${d.slice(0, 10)}-${d.slice(11, 13)}${d.slice(14, 16)}z`;
 }
 
 type Json = Record<string, unknown>;
@@ -123,13 +127,13 @@ export class UsGateway {
     return { bids: md.bids ?? [], offers: md.offers ?? [] };
   }
 
-  /** BRTI one-second prices in [fromSec, toSec]. Skips gap-filled seconds. */
-  async brti(fromSec: number, toSec: number): Promise<Tick[]> {
+  /** Settlement-index one-second values (BRTI / ETHUSD_RTI) in [fromSec, toSec]. Skips gap-filled seconds. */
+  async brti(fromSec: number, toSec: number, asset: Asset = "btc"): Promise<Tick[]> {
     const r = await this.get(
-      `/v1/asset-prices/history?assets=crypto:btc&bucket=ASSET_PRICE_BUCKET_1S&from=${fromSec}&to=${toSec}`,
+      `/v1/asset-prices/history?assets=crypto:${asset}&bucket=ASSET_PRICE_BUCKET_1S&from=${fromSec}&to=${toSec}`,
     );
     const series = ((r?.series ?? []) as Json[]).find(
-      (s) => ((s.asset ?? {}) as Json).symbol === "btc",
+      (s) => ((s.asset ?? {}) as Json).symbol === asset,
     );
     const candles = (series?.candles ?? []) as { timestamp: number | string; close: string; tickCount?: number }[];
     return candles
@@ -152,16 +156,17 @@ export class UsVenue implements Venue {
   constructor(
     private readonly gw: UsGateway,
     private readonly window: MarketWindow = "5m",
+    private readonly asset: Asset = "btc",
   ) {}
 
   async market(slotStart: number): Promise<SlotMarket | null> {
-    const m = await this.gw.marketBySlug(usSlugFor(slotStart, this.window));
+    const m = await this.gw.marketBySlug(usSlugFor(slotStart, this.window, this.asset));
     if (!m || m.closed || m.status === "MARKET_STATUS_RESOLVED") return null;
     return parseUsMarket(m, slotStart, this.window);
   }
 
   async resolution(slotStart: number): Promise<Winner | null> {
-    const m = await this.gw.marketBySlug(usSlugFor(slotStart, this.window));
+    const m = await this.gw.marketBySlug(usSlugFor(slotStart, this.window, this.asset));
     return m ? parseUsResolution(m) : null;
   }
 

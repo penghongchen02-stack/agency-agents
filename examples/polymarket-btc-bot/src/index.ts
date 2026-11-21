@@ -25,7 +25,7 @@ async function main(): Promise<void> {
         ? new UsLiveBroker(cfg)
         : await LiveBroker.connect(cfg);
   const venueLabel = cfg.venue === "us" ? "Polymarket US" : "Polymarket (global)";
-  log(`strategy ${cfg.strategy} on ${venueLabel} BTC ${cfg.marketWindow} markets`);
+  log(`strategy ${cfg.strategy} on ${venueLabel} ${cfg.asset.toUpperCase()} ${cfg.marketWindow} markets`);
   log(`${cfg.mode} broker ready, bankroll $${(await broker.bankrollUsd()).toFixed(2)}`);
 
   const tape = new PriceTape();
@@ -33,8 +33,8 @@ async function main(): Promise<void> {
   let feed: { stop: () => void };
   if (cfg.venue === "us") {
     const gw = new UsGateway(cfg.usGatewayHost);
-    venue = new UsVenue(gw, cfg.marketWindow);
-    feed = startBrtiFeed(tape, gw);
+    venue = new UsVenue(gw, cfg.marketWindow, cfg.asset);
+    feed = startBrtiFeed(tape, gw, cfg.asset);
   } else {
     venue = new GlobalVenue(new Gamma(cfg.gammaHost, cfg.marketWindow), publicClob(cfg));
     feed = startChainlinkFeed(tape);

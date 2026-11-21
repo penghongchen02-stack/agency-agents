@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { PaperBroker } from "./broker.js";
-import { WINDOW_SECONDS, loadConfig, loadDotEnv, type Config, type MarketWindow, type StrategyName } from "./config.js";
+import { WINDOW_SECONDS, loadConfig, loadDotEnv, type Asset, type Config, type MarketWindow, type StrategyName } from "./config.js";
 import { Engine, fairProbUp } from "./engine.js";
 import { Ledger, setQuiet, type LedgerEntry } from "./log.js";
 import { slotStartFor, type SlotMarket, type Winner } from "./markets.js";
@@ -47,6 +47,7 @@ export interface SlotData {
 
 export interface Dataset {
   window: MarketWindow;
+  asset?: Asset; // absent in datasets saved before ETH support (= btc)
   slots: SlotData[];
   brti: [number, number][]; // [unix sec, price]
 }
@@ -68,14 +69,14 @@ async function pool<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R>): 
   return out;
 }
 
-export async function fetchDataset(gw: UsGateway, window: MarketWindow, n: number): Promise<Dataset> {
+export async function fetchDataset(gw: UsGateway, window: MarketWindow, n: number, asset: Asset = "btc"): Promise<Dataset> {
   const len = WINDOW_SECONDS[window];
   const last = slotStartFor(Date.now() / 1000 - 3 * len - 120, len); // surely resolved
   const want = Math.ceil(n * 1.05) + 5; // a few windows are skipped for exchange maintenance
   const starts = Array.from({ length: want }, (_, i) => last - (want - 1 - i) * len);
   let done = 0;
   const rows = await pool(starts, 4, async (s): Promise<SlotData | null> => {
-    const slug = usSlugFor(s, window);
+    const slug = usSlugFor(s, window, asset);
     const m = await gw.marketBySlug(slug);
     if (++done % 100 === 0) process.stderr.write(`  markets ${done}/${starts.length}\n`);
     if (!m) return null;
@@ -104,7 +105,7 @@ export async function fetchDataset(gw: UsGateway, window: MarketWindow, n: numbe
   const chunks: number[] = [];
   for (let t = from; t < to; t += 3500) chunks.push(t);
   process.stderr.write(`  BRTI: ${chunks.length} hour-chunks of 1-second data\n`);
-  const parts = await pool(chunks, 3, (t) => gw.brti(t, Math.min(t + 3499, to)));
+  const parts = await pool(chunks, 3, (t) => gw.brti(t, Math.min(t + 3499, to), asset));
   const seen = new Set<number>();
   for (const part of parts)
     for (const tick of part) {
@@ -115,7 +116,7 @@ export async function fetchDataset(gw: UsGateway, window: MarketWindow, n: numbe
       }
     }
   brti.sort((a, b) => a[0] - b[0]);
-  return { window, slots, brti };
+  return { window, asset, slots, brti };
 }
 
 // ── replay ────────────────────────────────────────────────────────────────────
@@ -319,6 +320,8 @@ async function main(): Promise<void> {
   const cfg = loadConfig({ ...process.env, MODE: "paper", VENUE: "us" });
   const slots = Number(arg("slots", "1000"));
   const window = arg("window", cfg.marketWindow) as MarketWindow;
+  const asset = arg("asset", cfg.asset) as Asset;
+  if (asset !== "btc" && asset !== "eth") throw new Error("--asset must be btc or eth");
   const opts: ReplayOptions = {
     halfSpread: Number(arg("half-spread", "0.01")),
     lagSec: Number(arg("lag", "2")),
@@ -330,10 +333,12 @@ async function main(): Promise<void> {
     if (!allowed.includes(st)) throw new Error(`unknown strategy "${st}" (use ${allowed.join(", ")})`);
   }
   if (!Number.isInteger(slots) || slots < 1 || slots > 20_000) throw new Error("--slots must be 1..20000");
-  if (window !== "5m" && window !== "15m") throw new Error("--window must be 5m or 15m");
+  if (window !== "5m" && window !== "15m" && window !== "1h") throw new Error("--window must be 5m, 15m or 1h");
+  // Strategy timings follow the window being tested.
+  Object.assign(cfg, loadConfig({ ...process.env, MODE: "paper", VENUE: "us", MARKET_WINDOW: window, MARKET_ASSET: asset }));
   const base = join(cfg.stateDir, "backtest");
   mkdirSync(base, { recursive: true });
-  const cacheFile = join(base, `dataset-us-${window}-${slots}.json`);
+  const cacheFile = join(base, `dataset-us-${asset === "btc" ? "" : asset + "-"}${window}-${slots}.json`);
 
   let ds: Dataset;
   const fresh = process.argv.includes("--refresh");
@@ -341,8 +346,8 @@ async function main(): Promise<void> {
     ds = JSON.parse(readFileSync(cacheFile, "utf8")) as Dataset;
     process.stderr.write(`using cached dataset ${cacheFile} (pass --refresh to re-download)\n`);
   } else {
-    process.stderr.write(`downloading ${slots} resolved Polymarket US BTC ${window} markets...\n`);
-    ds = await fetchDataset(new UsGateway(cfg.usGatewayHost), window, slots);
+    process.stderr.write(`downloading ${slots} resolved Polymarket US ${asset.toUpperCase()} ${window} markets...\n`);
+    ds = await fetchDataset(new UsGateway(cfg.usGatewayHost), window, slots, asset);
     writeFileSync(cacheFile, JSON.stringify(ds));
   }
 
@@ -350,7 +355,7 @@ async function main(): Promise<void> {
   const first = new Date(ds.slots[0]!.slotStart * 1000).toISOString();
   const last = new Date(ds.slots[ds.slots.length - 1]!.slotStart * 1000).toISOString();
   const ups = ds.slots.filter((s) => s.winner === "UP").length;
-  console.log(`\nPolymarket US BTC ${window} backtest: ${ds.slots.length} real markets, ${first} → ${last}`);
+  console.log(`\nPolymarket US ${asset.toUpperCase()} ${window} backtest: ${ds.slots.length} real markets, ${first} → ${last}`);
   console.log(`Up won ${ups} (${((ups / ds.slots.length) * 100).toFixed(1)}%), Down won ${ds.slots.length - ups}`);
   console.log(
     `Assumptions: book = displayed price ±${opts.halfSpread}, feed lag ${opts.lagSec}s, ` +

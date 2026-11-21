@@ -305,7 +305,8 @@ export class Engine {
     const latest = this.d.tape.latest();
     log("status", {
       strategy: this.strategy.name,
-      btc: latest?.price ?? null,
+      asset: this.d.cfg.asset,
+      price: latest?.price ?? null,
       volBps: this.d.tape.volBpsPerSqrtSec()?.toFixed(2) ?? null,
       openPositions: this.positions.size,
       ...this.d.risk.snapshot(),

@@ -27,7 +27,10 @@ wallet-key stealer. This version keeps the legitimate idea and drops everything 
 
 ## Polymarket US
 
-`VENUE=us` (the default) trades Polymarket US. These facts were checked against the
+`VENUE=us` (the default) trades Polymarket US. Choose the coin with `MARKET_ASSET=btc|eth`
+and the window with `MARKET_WINDOW=5m|15m|1h`. ETH settles on CF Benchmarks ETHUSD_RTI, the
+same way BTC settles on BRTI. The backtest takes the same choices:
+`npm run backtest -- --asset eth --window 1h --slots 240`. These facts were checked against the
 official docs (docs.polymarket.us) **and** against live responses:
 
 | | Polymarket US |
