@@ -50,6 +50,35 @@ export class PriceTape {
   }
 
   /**
+   * Time-weighted average price over the last `windowMs`, ending at the latest tick.
+   * Each tick's price counts for as long as it was the current price. This smooths
+   * single-tick noise; it is NOT claimed to be Polymarket's settlement rule.
+   */
+  twap(windowMs: number): number | null {
+    const latest = this.latest();
+    if (!latest) return null;
+    const start = latest.tsMs - windowMs;
+    let prev = this.ticks.filter((t) => t.tsMs <= start).pop();
+    const inside = this.ticks.filter((t) => t.tsMs > start);
+    let prevT = start;
+    if (!prev) {
+      prev = inside.shift();
+      if (!prev) return latest.price;
+      prevT = prev.tsMs;
+    }
+    const span = latest.tsMs - prevT;
+    if (span <= 0) return latest.price;
+    let area = 0;
+    let prevP = prev.price;
+    for (const t of inside) {
+      area += prevP * (t.tsMs - prevT);
+      prevT = t.tsMs;
+      prevP = t.price;
+    }
+    return area / span;
+  }
+
+  /**
    * Realized volatility over the lookback, in basis points per sqrt(second).
    * Null if there isn't enough data.
    */

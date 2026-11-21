@@ -1,9 +1,9 @@
 /**
- * Market discovery for Polymarket "Bitcoin Up or Down" 5-minute markets.
- * Slugs look like `btc-updown-5m-<unix slot start>`, with slots on 300-second boundaries.
+ * Market discovery for Polymarket "Bitcoin Up or Down" 5- and 15-minute markets.
+ * Slugs look like `btc-updown-5m-<unix slot start>` / `btc-updown-15m-<unix slot start>`.
  * Uses only Polymarket's public Gamma API: no auth, no keys.
  */
-export const SLOT_SECONDS = 300;
+import { WINDOW_SECONDS, type MarketWindow } from "./config.js";
 
 export interface SlotMarket {
   slug: string;
@@ -16,12 +16,12 @@ export interface SlotMarket {
 
 export type Winner = "UP" | "DOWN";
 
-export function slotStartFor(unixSec: number): number {
-  return Math.floor(unixSec / SLOT_SECONDS) * SLOT_SECONDS;
+export function slotStartFor(unixSec: number, slotSeconds = 300): number {
+  return Math.floor(unixSec / slotSeconds) * slotSeconds;
 }
 
-export function slugFor(slotStart: number): string {
-  return `btc-updown-5m-${slotStart}`;
+export function slugFor(slotStart: number, window: MarketWindow = "5m"): string {
+  return `btc-updown-${window}-${slotStart}`;
 }
 
 function parseList(raw: unknown): string[] {
@@ -31,7 +31,11 @@ function parseList(raw: unknown): string[] {
 }
 
 /** Pure parser for a Gamma market record, kept separate so it can be unit-tested. */
-export function parseGammaMarket(data: Record<string, unknown>, slotStart: number): SlotMarket {
+export function parseGammaMarket(
+  data: Record<string, unknown>,
+  slotStart: number,
+  window: MarketWindow = "5m",
+): SlotMarket {
   const outcomes = parseList(data.outcomes).map((o) => o.toLowerCase());
   const tokens = parseList(data.clobTokenIds);
   const up = outcomes.indexOf("up");
@@ -40,10 +44,10 @@ export function parseGammaMarket(data: Record<string, unknown>, slotStart: numbe
     throw new Error(`unexpected outcomes ${JSON.stringify(outcomes)}`);
   }
   return {
-    slug: slugFor(slotStart),
-    question: String(data.question ?? slugFor(slotStart)),
+    slug: slugFor(slotStart, window),
+    question: String(data.question ?? slugFor(slotStart, window)),
     slotStart,
-    slotEnd: slotStart + SLOT_SECONDS,
+    slotEnd: slotStart + WINDOW_SECONDS[window],
     upTokenId: tokens[up],
     downTokenId: tokens[down],
   };
@@ -61,7 +65,10 @@ export function parseResolution(data: Record<string, unknown>): Winner | null {
 }
 
 export class Gamma {
-  constructor(private readonly host: string) {}
+  constructor(
+    private readonly host: string,
+    private readonly window: MarketWindow = "5m",
+  ) {}
 
   private async get(slug: string): Promise<Record<string, unknown> | null> {
     const resp = await fetch(`${this.host}/markets/slug/${encodeURIComponent(slug)}`, {
@@ -73,12 +80,12 @@ export class Gamma {
   }
 
   async market(slotStart: number): Promise<SlotMarket | null> {
-    const data = await this.get(slugFor(slotStart));
-    return data ? parseGammaMarket(data, slotStart) : null;
+    const data = await this.get(slugFor(slotStart, this.window));
+    return data ? parseGammaMarket(data, slotStart, this.window) : null;
   }
 
   async resolution(slotStart: number): Promise<Winner | null> {
-    const data = await this.get(slugFor(slotStart));
+    const data = await this.get(slugFor(slotStart, this.window));
     return data ? parseResolution(data) : null;
   }
 }

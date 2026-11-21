@@ -24,14 +24,21 @@ export function warn(msg: string, err?: unknown): void {
   console.warn(`${new Date().toISOString()} WARN ${redact(`${msg} ${detail}`.trim())}`);
 }
 
+type Side = "UP" | "DOWN";
+interface Base {
+  ts: number;
+  mode: "paper" | "live";
+  strategy?: string;
+  slug: string;
+  slotStart: number;
+  /** Absent in ledgers written by v0.1 (5-minute only). */
+  slotEnd?: number;
+  side: Side;
+}
+
 export type LedgerEntry =
-  | {
+  | (Base & {
       kind: "entry";
-      ts: number;
-      mode: "paper" | "live";
-      slug: string;
-      slotStart: number;
-      side: "UP" | "DOWN";
       tokenId: string;
       price: number;
       shares: number;
@@ -39,21 +46,29 @@ export type LedgerEntry =
       modelProb: number;
       edge: number;
       orderId?: string;
-    }
-  | {
+    })
+  | (Base & {
+      /** A scratch: position sold before resolution. */
+      kind: "exit";
+      tokenId: string;
+      price: number;
+      shares: number;
+      proceedsUsd: number;
+      costUsd: number; // cost basis of the shares sold
+      pnlUsd: number;
+      modelProb: number;
+      reason: string;
+      orderId?: string;
+    })
+  | (Base & {
       kind: "settle";
-      ts: number;
-      mode: "paper" | "live";
-      slug: string;
-      slotStart: number;
-      side: "UP" | "DOWN";
-      winner: "UP" | "DOWN";
+      winner: Side;
       shares: number;
       costUsd: number;
       payoutUsd: number;
       pnlUsd: number;
       modelProb: number;
-    };
+    });
 
 export class Ledger {
   private readonly file: string;
@@ -80,4 +95,72 @@ export class Ledger {
         }
       });
   }
+}
+
+export interface Position {
+  slug: string;
+  slotStart: number;
+  slotEnd: number;
+  side: Side;
+  tokenId: string;
+  shares: number;
+  costUsd: number;
+  modelProb: number;
+  clips: number;
+}
+
+export interface Replay {
+  positions: Map<number, Position>;
+  /** Net cash change from all activity (negative = money in positions or lost). */
+  cashDeltaUsd: number;
+  /** Today's (UTC) activity, used to rebuild risk counters. */
+  today: { entries: { slotStart: number; costUsd: number }[]; closes: { costUsd: number; pnlUsd: number }[] };
+}
+
+/** Rebuild open positions and cash flows by replaying the ledger in order. */
+export function replayLedger(entries: LedgerEntry[], mode: "paper" | "live", nowMs: number): Replay {
+  const day = new Date(nowMs).toISOString().slice(0, 10);
+  const positions = new Map<number, Position>();
+  const r: Replay = { positions, cashDeltaUsd: 0, today: { entries: [], closes: [] } };
+  for (const e of entries) {
+    if (e.mode !== mode) continue;
+    const isToday = new Date(e.ts).toISOString().slice(0, 10) === day;
+    const slotEnd = e.slotEnd ?? e.slotStart + 300;
+    if (e.kind === "entry") {
+      r.cashDeltaUsd -= e.costUsd;
+      if (isToday) r.today.entries.push({ slotStart: e.slotStart, costUsd: e.costUsd });
+      const p = positions.get(e.slotStart);
+      if (p && p.side === e.side) {
+        p.shares += e.shares;
+        p.costUsd += e.costUsd;
+        p.clips += 1;
+      } else {
+        positions.set(e.slotStart, {
+          slug: e.slug,
+          slotStart: e.slotStart,
+          slotEnd,
+          side: e.side,
+          tokenId: e.tokenId,
+          shares: e.shares,
+          costUsd: e.costUsd,
+          modelProb: e.modelProb,
+          clips: 1,
+        });
+      }
+    } else if (e.kind === "exit") {
+      r.cashDeltaUsd += e.proceedsUsd;
+      if (isToday) r.today.closes.push({ costUsd: e.costUsd, pnlUsd: e.pnlUsd });
+      const p = positions.get(e.slotStart);
+      if (p) {
+        p.shares -= e.shares;
+        p.costUsd -= e.costUsd;
+        if (p.shares <= 1e-9) positions.delete(e.slotStart);
+      }
+    } else {
+      r.cashDeltaUsd += e.payoutUsd;
+      if (isToday) r.today.closes.push({ costUsd: e.costUsd, pnlUsd: e.pnlUsd });
+      positions.delete(e.slotStart);
+    }
+  }
+  return r;
 }

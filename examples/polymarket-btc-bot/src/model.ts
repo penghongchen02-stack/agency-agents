@@ -49,6 +49,8 @@ export interface Quote {
   tokenId: string;
   bestAsk: number | null;
   askSize: number;
+  bestBid: number | null;
+  bidSize: number;
 }
 
 export interface Decision {
@@ -66,12 +68,15 @@ export interface DecideParams {
   feeBuffer: number;
   minEntryPrice: number;
   maxEntryPrice: number;
+  /** Restrict to one side (e.g. when adding to an existing position). */
+  onlySide?: "UP" | "DOWN";
 }
 
 /** Choose the side with the best edge, or nothing. Pure function. */
 export function decide(p: DecideParams): Decision | null {
   let best: Decision | null = null;
   for (const q of p.quotes) {
+    if (p.onlySide && q.side !== p.onlySide) continue;
     if (q.bestAsk === null || q.askSize <= 0) continue;
     if (q.bestAsk < p.minEntryPrice || q.bestAsk > p.maxEntryPrice) continue;
     const prob = q.side === "UP" ? p.pUp : 1 - p.pUp;

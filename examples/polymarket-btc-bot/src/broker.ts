@@ -1,7 +1,7 @@
 /**
  * Order execution. Two brokers share one interface:
  *  - PaperBroker: simulates a fill at the real best ask, capped at its displayed size.
- *  - LiveBroker:  sends a Fill-And-Kill order through Polymarket's OFFICIAL CLOB client,
+ *  - LiveBroker:  sends Fill-And-Kill orders (buy and scratch-sell) through Polymarket's OFFICIAL CLOB client,
  *                 with a price cap so it never pays more than the ask we priced.
  *
  * The private key is used only to sign orders locally (viem). Nothing in this file
@@ -29,10 +29,24 @@ export interface Fill {
   orderId?: string;
 }
 
+export interface SellFill {
+  price: number; // average price per share
+  shares: number;
+  proceedsUsd: number;
+  orderId?: string;
+}
+
+export interface SellOrder {
+  tokenId: string;
+  shares: number;
+  price: number; // minimum acceptable price
+}
+
 export interface Broker {
   readonly mode: "paper" | "live";
   bankrollUsd(): Promise<number>;
   buy(market: SlotMarket, decision: Decision, stakeUsd: number, quote: Quote): Promise<Fill | null>;
+  sell(order: SellOrder, quote: Quote): Promise<SellFill | null>;
   /** Paper only: credit a settled position. Live payouts are redeemed on Polymarket. */
   credit(payoutUsd: number): void;
 }
@@ -58,7 +72,17 @@ export async function quoteFor(
       askSize = Number(level.size);
     }
   }
-  return { side, tokenId, bestAsk, askSize };
+  let bestBid: number | null = null;
+  let bidSize = 0;
+  for (const level of book.bids ?? []) {
+    const price = Number(level.price);
+    if (!Number.isFinite(price)) continue;
+    if (bestBid === null || price > bestBid) {
+      bestBid = price;
+      bidSize = Number(level.size);
+    }
+  }
+  return { side, tokenId, bestAsk, askSize, bestBid, bidSize };
 }
 
 export class PaperBroker implements Broker {
@@ -76,6 +100,15 @@ export class PaperBroker implements Broker {
     if (costUsd > this.bankroll) return null;
     this.bankroll -= costUsd;
     return { price: d.price, shares, costUsd };
+  }
+
+  async sell(o: SellOrder, q: Quote): Promise<SellFill | null> {
+    if (q.bestBid === null || q.bestBid < o.price) return null;
+    const shares = Math.floor(Math.min(o.shares, q.bidSize) * 100) / 100;
+    if (shares <= 0) return null;
+    const proceedsUsd = shares * q.bestBid;
+    this.bankroll += proceedsUsd;
+    return { price: q.bestBid, shares, proceedsUsd };
   }
 
   credit(payoutUsd: number): void {
@@ -119,6 +152,19 @@ export class LiveBroker implements Broker {
     const costUsd = Number(resp.makingAmount);
     if (!(shares > 0) || !(costUsd > 0)) return null; // nothing matched
     return { price: costUsd / shares, shares, costUsd, orderId: resp.orderID };
+  }
+
+  async sell(o: SellOrder): Promise<SellFill | null> {
+    const resp = await this.client.createAndPostMarketOrder(
+      { tokenID: o.tokenId, amount: Math.floor(o.shares * 100) / 100, side: Side.SELL, price: o.price },
+      undefined,
+      OrderType.FAK,
+    );
+    if (!resp.success) throw new Error(`order rejected: ${resp.errorMsg || resp.status}`);
+    const shares = Number(resp.makingAmount);
+    const proceedsUsd = Number(resp.takingAmount);
+    if (!(shares > 0) || !(proceedsUsd > 0)) return null;
+    return { price: proceedsUsd / shares, shares, proceedsUsd, orderId: resp.orderID };
   }
 
   credit(): void {
