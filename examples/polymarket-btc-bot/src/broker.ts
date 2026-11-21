@@ -15,7 +15,7 @@ import {
   OrderType,
   Side,
 } from "@polymarket/clob-client-v2";
-import { createWalletClient, http } from "viem";
+import { createWalletClient, custom } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { polygon } from "viem/chains";
 import type { Config } from "./config.js";
@@ -126,13 +126,25 @@ export class PaperBroker implements Broker {
   }
 }
 
+/**
+ * A wallet that can only sign locally. Its transport refuses every network call, so the
+ * key provably never talks to a blockchain node or any other server.
+ */
+export function signingOnlyWallet(privateKey: `0x${string}`) {
+  const noNetwork = custom({
+    request: async ({ method }) => {
+      throw new Error(`blocked RPC call "${method}": this bot only signs locally`);
+    },
+  });
+  return createWalletClient({ account: privateKeyToAccount(privateKey), chain: polygon, transport: noNetwork });
+}
+
 export class LiveBroker implements Broker {
   readonly mode = "live" as const;
   private constructor(private readonly client: ClobClient) {}
 
   static async connect(cfg: Config): Promise<LiveBroker> {
-    const account = privateKeyToAccount(cfg.privateKey as `0x${string}`);
-    const signer = createWalletClient({ account, chain: polygon, transport: http() });
+    const signer = signingOnlyWallet(cfg.privateKey as `0x${string}`);
     const bootstrap = new ClobClient({ host: cfg.clobHost, chain: Chain.POLYGON, signer });
     const creds = await bootstrap.createOrDeriveApiKey();
     const client = new ClobClient({

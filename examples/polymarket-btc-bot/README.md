@@ -138,6 +138,20 @@ nothing, and that's the right outcome.
 - The bot skips a slot when the feed is stale or when it can't trust the open price (for example, it joined mid-slot).
 - A restart restores open positions and today's risk counters from the ledger.
 
+## Security audit (what to check, and what we checked)
+
+You shouldn't trust this bot on our word, any more than the original. Here's what was checked, and how to re-check it:
+
+| Check | Result | Re-check yourself |
+|---|---|---|
+| Network destinations in our code | Only `clob.polymarket.com`, `gamma-api.polymarket.com`, `gateway.polymarket.us` (plus `api.polymarket.us` and `ws-live-data.polymarket.com` inside Polymarket's SDKs) | `grep -rnoE "(https?\|wss?)://[a-zA-Z0-9.-]+" src node_modules/polymarket-us/dist node_modules/@polymarket/*/dist` |
+| Host overrides (`CLOB_HOST`, ...) | Must be https on a Polymarket domain, so a planted `.env` can't redirect orders | `test/core.test.ts`: "host overrides…" |
+| Where your key goes | Only read in live mode, only used to sign locally. The global signer's transport refuses every network call. Logs, ledger and the startup print redact keys | `grep -rn "privateKey\|usSecretKey" src` |
+| Dynamic code, shell, obfuscation | No `eval`, `Function`, `child_process`, dynamic `import()`, hidden Unicode, or encoded blobs | `grep -rnE "eval\(\|child_process\|new Function" src` |
+| Files written | Only `state/` (ledger, backtest cache). The backtest deletes only its own per-strategy folders | `grep -rn "writeFile\|rmSync\|appendFile" src` |
+| Dependencies | 118 packages, all from registry.npmjs.org with integrity hashes. `polymarket-us` is the SDK Polymarket's docs name, and the rest are Polymarket's own or well-known. The only install scripts are esbuild (dev) and fsevents (macOS); install with `--ignore-scripts` | `npm ci --ignore-scripts && npm audit` |
+| Binaries / original repo leftovers | None in the tree or the git history | `git log --all --name-only \| grep -iE "\.exe\|\.dll"` |
+
 ## Run it
 
 Requires Node.js ≥ 20.12.

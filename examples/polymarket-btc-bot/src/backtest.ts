@@ -245,6 +245,10 @@ export async function replay(
   opts: ReplayOptions,
   stateDir: string,
 ): Promise<StrategyResult> {
+  // Only ever clear a per-strategy folder inside .../backtest/ that we created.
+  if (!/[\\/]backtest[\\/](fair-value|twap-scratch|winner-lock)$/.test(stateDir)) {
+    throw new Error(`refusing to clear unexpected directory ${stateDir}`);
+  }
   rmSync(stateDir, { recursive: true, force: true });
   const cfg: Config = { ...baseCfg, strategy, stateDir, mode: "paper" };
   const len = WINDOW_SECONDS[ds.window];
@@ -320,7 +324,13 @@ async function main(): Promise<void> {
     lagSec: Number(arg("lag", "2")),
     bankrollUsd: Number(arg("bankroll", String(cfg.paperBankrollUsd))),
   };
-  const strategies = arg("strategies", "fair-value,twap-scratch,winner-lock").split(",") as StrategyName[];
+  const allowed: StrategyName[] = ["fair-value", "twap-scratch", "winner-lock"];
+  const strategies = arg("strategies", allowed.join(",")).split(",") as StrategyName[];
+  for (const st of strategies) {
+    if (!allowed.includes(st)) throw new Error(`unknown strategy "${st}" (use ${allowed.join(", ")})`);
+  }
+  if (!Number.isInteger(slots) || slots < 1 || slots > 20_000) throw new Error("--slots must be 1..20000");
+  if (window !== "5m" && window !== "15m") throw new Error("--window must be 5m or 15m");
   const base = join(cfg.stateDir, "backtest");
   mkdirSync(base, { recursive: true });
   const cacheFile = join(base, `dataset-us-${window}-${slots}.json`);

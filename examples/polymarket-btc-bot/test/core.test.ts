@@ -3,8 +3,8 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PaperBroker } from "../src/broker.js";
-import { LIVE_CONFIRM_PHRASE, describeConfig, loadConfig } from "../src/config.js";
+import { PaperBroker, signingOnlyWallet } from "../src/broker.js";
+import { LIVE_CONFIRM_PHRASE, describeConfig, loadConfig, officialHost } from "../src/config.js";
 import { Engine } from "../src/engine.js";
 import { Ledger, redact, replayLedger } from "../src/log.js";
 import { parseGammaMarket, parseResolution, slotStartFor, slugFor } from "../src/markets.js";
@@ -405,4 +405,46 @@ test("backtest synthetic book always charges a spread", () => {
   assert.equal(up!.bestBid, 0.58);
   assert.equal(down!.bestAsk, 0.42);
   assert.equal(down!.bestBid, 0.39);
+});
+
+// ── security hardening ────────────────────────────────────────────────────────
+
+test("host overrides are limited to official Polymarket https hosts", () => {
+  assert.equal(officialHost({}, "X", "https://clob.polymarket.com"), "https://clob.polymarket.com");
+  assert.equal(officialHost({ X: "https://gateway.polymarket.us/" }, "X", ""), "https://gateway.polymarket.us");
+  for (const bad of [
+    "https://evil.example.com",
+    "https://polymarket.us.evil.com",
+    "http://clob.polymarket.com",
+    "https://user:pw@clob.polymarket.com",
+    "https://notpolymarket.com",
+  ]) {
+    assert.throws(() => officialHost({ X: bad }, "X", ""), /must be an https URL/, bad);
+  }
+  assert.throws(() => loadConfig({ CLOB_HOST: "https://evil.example.com" }), /CLOB_HOST/);
+});
+
+test("signing wallet signs locally and refuses all network calls", async () => {
+  const w = signingOnlyWallet(FAKE_KEY as `0x${string}`);
+  const [addr] = await w.getAddresses();
+  assert.match(addr!, /^0x[0-9a-fA-F]{40}$/);
+  const sig = await w.signTypedData({
+    domain: { name: "Test", version: "1", chainId: 137 },
+    types: { Msg: [{ name: "v", type: "uint256" }] },
+    primaryType: "Msg",
+    message: { v: 1n },
+  });
+  assert.match(sig, /^0x[0-9a-f]{130}$/);
+  await assert.rejects(() => w.request({ method: "eth_blockNumber" } as never), /blocked RPC call/);
+});
+
+test("describeConfig never prints any credential", () => {
+  const usSecret = Buffer.alloc(32, 3).toString("base64");
+  const keyId = "123e4567-e89b-12d3-a456-426614174000";
+  const out = JSON.stringify(
+    describeConfig(
+      loadConfig({ MODE: "live", LIVE_CONFIRM: LIVE_CONFIRM_PHRASE, US_KEY_ID: keyId, US_SECRET_KEY: usSecret }),
+    ),
+  );
+  assert.ok(!out.includes(usSecret) && !out.includes(keyId));
 });

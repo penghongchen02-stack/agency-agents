@@ -93,6 +93,30 @@ function oneOf<T extends string>(env: Env, key: string, fallback: T, allowed: re
   return value;
 }
 
+/**
+ * Official hosts only. A host override (e.g. for a proxy or Polymarket's pre-prod) must be
+ * https and on a Polymarket domain, so a planted .env can't redirect signed orders or API
+ * credentials to someone else's server.
+ */
+const OFFICIAL_DOMAINS = ["polymarket.com", "polymarket.us", "polymarketexchange.com"];
+
+export function officialHost(env: Env, key: string, fallback: string): string {
+  const raw = (env[key] ?? "").trim();
+  if (!raw) return fallback;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error(`${key} is not a valid URL`);
+  }
+  const host = url.hostname.toLowerCase();
+  const ok = OFFICIAL_DOMAINS.some((d) => host === d || host.endsWith(`.${d}`));
+  if (url.protocol !== "https:" || !ok || url.username || url.password) {
+    throw new Error(`${key} must be an https URL on ${OFFICIAL_DOMAINS.join(" / ")} (got "${raw}")`);
+  }
+  return url.origin;
+}
+
 function band(lo: number, hi: number, what: string): void {
   if (lo >= hi) throw new Error(`${what}: lower bound must be below upper bound`);
 }
@@ -152,9 +176,9 @@ export function loadConfig(env: Env = process.env): Config {
     paperBankrollUsd: num(env, "PAPER_BANKROLL_USD", 100, 1, 10_000_000),
 
     stateDir: env.STATE_DIR ?? "state",
-    clobHost: env.CLOB_HOST ?? "https://clob.polymarket.com",
-    gammaHost: env.GAMMA_HOST ?? "https://gamma-api.polymarket.com",
-    usGatewayHost: env.US_GATEWAY_HOST ?? "https://gateway.polymarket.us",
+    clobHost: officialHost(env, "CLOB_HOST", "https://clob.polymarket.com"),
+    gammaHost: officialHost(env, "GAMMA_HOST", "https://gamma-api.polymarket.com"),
+    usGatewayHost: officialHost(env, "US_GATEWAY_HOST", "https://gateway.polymarket.us"),
   };
 
   band(cfg.minEntryPrice, cfg.maxEntryPrice, "MIN/MAX_ENTRY_PRICE");
@@ -203,7 +227,7 @@ export function loadDotEnv(path = ".env"): void {
 
 /** A copy of the config that is safe to print. */
 export function describeConfig(cfg: Config): Record<string, unknown> {
-  const { privateKey, usSecretKey, ...rest } = cfg;
+  const { privateKey, usSecretKey, usKeyId, ...rest } = cfg;
   const hide = (v: string) => (v ? "[set, hidden]" : "[not set]");
-  return { ...rest, privateKey: hide(privateKey), usSecretKey: hide(usSecretKey) };
+  return { ...rest, privateKey: hide(privateKey), usSecretKey: hide(usSecretKey), usKeyId: hide(usKeyId) };
 }
