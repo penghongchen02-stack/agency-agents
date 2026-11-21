@@ -12,6 +12,13 @@ export interface SlotMarket {
   slotEnd: number;
   upTokenId: string;
   downTokenId: string;
+  /** Opening reference price published by the venue (Polymarket US), if any. */
+  priceToBeat?: number;
+  /**
+   * 0: the price feed is raw and settles at slotEnd.
+   * N: the feed is a trailing N-second average and settles at its value at slotEnd − 1s (US).
+   */
+  feedSmoothingSec: number;
 }
 
 export type Winner = "UP" | "DOWN";
@@ -50,6 +57,7 @@ export function parseGammaMarket(
     slotEnd: slotStart + WINDOW_SECONDS[window],
     upTokenId: tokens[up],
     downTokenId: tokens[down],
+    feedSmoothingSec: 0,
   };
 }
 

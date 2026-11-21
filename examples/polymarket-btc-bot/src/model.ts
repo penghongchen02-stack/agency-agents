@@ -31,17 +31,65 @@ export function normCdf(x: number): number {
 export interface FairValueInput {
   openPrice: number;
   currentPrice: number;
+  /** Seconds until the settlement value is sampled. */
   secondsLeft: number;
+  /** Volatility of the underlying (raw) price, in bps per sqrt(second). */
   volBpsPerSqrtSec: number;
+  /**
+   * 0 (global): the feed is the raw price and settlement is a single price.
+   * N > 0 (Polymarket US): the feed is already a trailing N-second average of the raw index,
+   * and settlement IS the feed's value at the sampling time. Verified: the published
+   * priceToBeat/settlementPrice equal the feed's 1-second value at T−1s exactly.
+   */
+  smoothSec?: number;
+  /** Recent slope of the smoothed feed, in price units per second (US only). */
+  slopePerSec?: number;
 }
 
-/** Probability that the slot resolves UP. Clamped to [0.01, 0.99] so it's never "certain". */
+/**
+ * Probability that the slot resolves UP. Clamped to [0.01, 0.99] so it's never "certain".
+ *
+ * Point model (global): P(up) = Φ( ln(P/open) / (σ·√τ) ).
+ *
+ * Smoothed model (US): the feed S(t) is the mean of the last N raw prices, so it lags
+ * the raw price. Assume the raw price moved roughly linearly over the last N seconds
+ * with slope b (≈ the feed's own 1-second slope). Then:
+ *   raw now            ≈ S + b·(N−1)/2
+ *   E[S at settlement] = raw − b·k(k−1)/(2N)       (k = window points already in the past)
+ *   Var                = σ²/N² · Σᵢ Σⱼ min(uᵢ, uⱼ) (uᵢ = how far ahead each future point is)
+ * Ignoring the lag would make the bot "see edge" that is just the feed being 30s stale.
+ */
 export function probUp(i: FairValueInput): number {
-  const d = Math.log(i.currentPrice / i.openPrice);
-  if (i.secondsLeft <= 0) return d >= 0 ? 0.99 : 0.01;
   const sigma = i.volBpsPerSqrtSec / 10_000;
-  const z = d / (sigma * Math.sqrt(i.secondsLeft));
+  const tau = Math.max(0, i.secondsLeft);
+  const N = Math.max(0, Math.round(i.smoothSec ?? 0));
+  let expected = i.currentPrice;
+  let variance: number;
+  if (N === 0) {
+    variance = sigma * sigma * tau;
+  } else {
+    const b = i.slopePerSec ?? 0;
+    const raw = i.currentPrice + (b * (N - 1)) / 2;
+    const m = Math.min(N, Math.floor(tau)); // future points in the settlement window
+    const k = N - m;
+    expected = raw - (b * k * (k - 1)) / (2 * N);
+    // ascending future offsets u_1..u_m = tau-m+1 .. tau ; ΣΣmin = Σ u_i·(2(m−i)+1)
+    let sum = 0;
+    for (let idx = 1; idx <= m; idx++) {
+      const u = tau - m + idx;
+      sum += u * (2 * (m - idx) + 1);
+    }
+    variance = (sigma * sigma * sum) / (N * N);
+  }
+  const d = Math.log(expected / i.openPrice);
+  if (variance <= 0) return d >= 0 ? 0.99 : 0.01; // ties settle Up
+  const z = d / Math.sqrt(variance);
   return Math.min(0.99, Math.max(0.01, normCdf(z)));
+}
+
+/** Taker fee per contract: θ × p × (1 − p) (Polymarket US formula). */
+export function feePerContract(theta: number, price: number): number {
+  return theta * price * (1 - price);
 }
 
 export interface Quote {
@@ -66,6 +114,8 @@ export interface DecideParams {
   quotes: Quote[];
   minEdge: number;
   feeBuffer: number;
+  /** Taker fee coefficient; the exact fee is subtracted from the edge. */
+  feeTheta?: number;
   minEntryPrice: number;
   maxEntryPrice: number;
   /** Restrict to one side (e.g. when adding to an existing position). */
@@ -80,7 +130,7 @@ export function decide(p: DecideParams): Decision | null {
     if (q.bestAsk === null || q.askSize <= 0) continue;
     if (q.bestAsk < p.minEntryPrice || q.bestAsk > p.maxEntryPrice) continue;
     const prob = q.side === "UP" ? p.pUp : 1 - p.pUp;
-    const edge = prob - q.bestAsk - p.feeBuffer;
+    const edge = prob - q.bestAsk - feePerContract(p.feeTheta ?? 0, q.bestAsk) - p.feeBuffer;
     if (edge < p.minEdge) continue;
     if (!best || edge > best.edge) {
       best = { side: q.side, tokenId: q.tokenId, price: q.bestAsk, modelProb: prob, edge };

@@ -9,12 +9,21 @@ import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 const HEX_KEY = /0x[0-9a-fA-F]{64}\b|\b[0-9a-fA-F]{64}\b/g;
+// base64 of a 32- or 64-byte secret (Polymarket US Ed25519 keys)
+const B64_KEY = /(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{43}=|[A-Za-z0-9+/]{86}==)(?![A-Za-z0-9+/=])/g;
 
 export function redact(text: string): string {
-  return text.replace(HEX_KEY, "[redacted-key]");
+  return text.replace(HEX_KEY, "[redacted-key]").replace(B64_KEY, "[redacted-key]");
+}
+
+let quiet = false;
+/** Silence routine logs (used by the backtest). Warnings still print. */
+export function setQuiet(q: boolean): void {
+  quiet = q;
 }
 
 export function log(msg: string, data?: Record<string, unknown>): void {
+  if (quiet) return;
   const line = data ? `${msg} ${JSON.stringify(data)}` : msg;
   console.log(`${new Date().toISOString()} ${redact(line)}`);
 }

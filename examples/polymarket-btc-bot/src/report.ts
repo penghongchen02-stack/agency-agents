@@ -34,7 +34,7 @@ export function score(entries: LedgerEntry[], mode: "paper" | "live", strategy?:
     if (e.kind !== "entry") continue;
     cost += e.costUsd;
     const p = paid.get(e.slotStart) ?? { cost: 0, shares: 0 };
-    p.cost += e.costUsd;
+    p.cost += e.price * e.shares; // trade price, excluding fees
     p.shares += e.shares;
     paid.set(e.slotStart, p);
   }

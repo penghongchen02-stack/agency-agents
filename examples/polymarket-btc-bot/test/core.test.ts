@@ -13,6 +13,11 @@ import { PriceTape } from "../src/priceFeed.js";
 import { score } from "../src/report.js";
 import { RiskManager } from "../src/risk.js";
 import { twapScratch, winnerLock } from "../src/strategies.js";
+import { GlobalVenue } from "../src/venue.js";
+import { buildOrder, summarizeExecutions, yesPriceFor } from "../src/usBroker.js";
+import { parseUsMarket, parseUsResolution, quotesFromYesBook, usSlugFor } from "../src/usVenue.js";
+import { syntheticQuotes } from "../src/backtest.js";
+import { feePerContract } from "../src/model.js";
 
 const FAKE_KEY = "0x" + "ab".repeat(32);
 const SLOT = 1_800_000_000;
@@ -79,17 +84,32 @@ test("PriceTape: open price only trusted near the boundary; vol and TWAP", () =>
 test("config: paper by default, live demands confirmation and valid key", () => {
   const def = loadConfig({});
   assert.equal(def.mode, "paper");
+  assert.equal(def.venue, "us");
+  assert.equal(def.feeTheta, 0.0695);
+  assert.equal(loadConfig({ VENUE: "global" }).feeTheta, 0);
   assert.equal(def.strategy, "fair-value");
   assert.equal(def.slotSeconds, 300);
   assert.equal(loadConfig({ MARKET_WINDOW: "15m" }).slotSeconds, 900);
   assert.throws(() => loadConfig({ STRATEGY: "martingale" }), /STRATEGY/);
   assert.throws(() => loadConfig({ MODE: "live", PRIVATE_KEY: FAKE_KEY }), /LIVE_CONFIRM/);
   assert.throws(
-    () => loadConfig({ MODE: "live", LIVE_CONFIRM: LIVE_CONFIRM_PHRASE, PRIVATE_KEY: "0x123" }),
+    () => loadConfig({ MODE: "live", VENUE: "global", LIVE_CONFIRM: LIVE_CONFIRM_PHRASE, PRIVATE_KEY: "0x123" }),
     /PRIVATE_KEY/,
   );
+  // US live needs a UUID key id and a base64 Ed25519 secret
+  assert.throws(() => loadConfig({ MODE: "live", LIVE_CONFIRM: LIVE_CONFIRM_PHRASE }), /US_KEY_ID/);
+  const usSecret = Buffer.alloc(32, 7).toString("base64");
+  const usLive = loadConfig({
+    MODE: "live",
+    LIVE_CONFIRM: LIVE_CONFIRM_PHRASE,
+    US_KEY_ID: "123e4567-e89b-12d3-a456-426614174000",
+    US_SECRET_KEY: usSecret,
+  });
+  assert.equal(usLive.usSecretKey, usSecret);
+  assert.ok(!JSON.stringify(describeConfig(usLive)).includes(usSecret));
   const live = loadConfig({
     MODE: "live",
+    VENUE: "global",
     LIVE_CONFIRM: LIVE_CONFIRM_PHRASE,
     PRIVATE_KEY: FAKE_KEY,
     FUNDER_ADDRESS: "0x" + "1".repeat(40),
@@ -106,6 +126,9 @@ test("paper mode ignores a key even if one is set", () => {
 
 test("redact removes private keys from any text", () => {
   assert.ok(!redact(`key=${FAKE_KEY}`).includes("abab"));
+  const b64 = Buffer.alloc(32, 9).toString("base64");
+  assert.ok(!redact(`secret=${b64}`).includes(b64));
+  assert.equal(redact("slug=cpc-btc-updown-5m-2026-11-21-1205z"), "slug=cpc-btc-updown-5m-2026-11-21-1205z");
   assert.ok(!redact(`key=${"cd".repeat(32)}`).includes("cdcd"));
   assert.equal(redact("price=0.52"), "price=0.52");
 });
@@ -145,7 +168,7 @@ test("risk: per-slot trade and USD caps, loss limit counts open exposure, STOP f
 });
 
 test("twap-scratch: buys only in the 45–55¢ band, adds on same side, scratches on flip", () => {
-  const cfg = loadConfig({ STRATEGY: "twap-scratch" });
+  const cfg = loadConfig({ STRATEGY: "twap-scratch", VENUE: "global" });
   const base = { cfg, secIn: 60, secLeft: 240, position: null };
   // Strong UP signal but ask outside band → nothing
   assert.equal(twapScratch.act({ ...base, pUp: 0.7, quotes: [q("UP", 0.62), q("DOWN", 0.4)] }), null);
@@ -167,7 +190,7 @@ test("twap-scratch: buys only in the 45–55¢ band, adds on same side, scratche
 });
 
 test("winner-lock: only in the last 60s, only 90–96¢, only if the model agrees", () => {
-  const cfg = loadConfig({ STRATEGY: "winner-lock" });
+  const cfg = loadConfig({ STRATEGY: "winner-lock", VENUE: "global" });
   const quotes = [q("UP", 0.93), q("DOWN", 0.08)];
   const ctx = { cfg, position: null, quotes };
   assert.equal(winnerLock.act({ ...ctx, secIn: 200, secLeft: 100, pUp: 0.99 }), null); // too early
@@ -196,7 +219,8 @@ test("replayLedger rebuilds clips, scratches and settles", () => {
 
 function engineHarness(env: Record<string, string>, books: Record<string, { asks: object[]; bids: object[] }>) {
   const dir = mkdtempSync(join(tmpdir(), "engine-"));
-  const cfg = loadConfig({ STATE_DIR: dir, ...env });
+  // These engine tests exercise the global venue (Chainlink feed, no explicit fee).
+  const cfg = loadConfig({ STATE_DIR: dir, VENUE: "global", ...env });
   const clock = { nowMs: (SLOT + 120) * 1000 };
   const tape = new PriceTape();
   let resolved: "UP" | "DOWN" | null = null;
@@ -209,7 +233,7 @@ function engineHarness(env: Record<string, string>, books: Record<string, { asks
   const ledger = new Ledger(dir);
   const make = () =>
     new Engine({
-      cfg, tape, gamma: gamma as never, clob: clob as never, broker, ledger,
+      cfg, tape, venue: new GlobalVenue(gamma as never, clob as never), broker, ledger,
       risk: new RiskManager(cfg, join(dir, "STOP"), () => clock.nowMs),
       now: () => clock.nowMs,
     });
@@ -296,4 +320,89 @@ test("engine (twap-scratch): builds clips under the slot cap, then scratches and
   const card = score(h.ledger.read(), "paper", "twap-scratch")!;
   assert.equal(card.scratches, 1);
   assert.ok(card.pnlUsd < 0 && card.pnlUsd > -0.5, `scratch should cost ~1¢/share, got ${card.pnlUsd}`);
+});
+
+// ── Polymarket US ─────────────────────────────────────────────────────────────
+
+test("US slugs match the live format", () => {
+  // 2026-11-21T12:05:00Z
+  assert.equal(usSlugFor(Date.UTC(2026, 10, 21, 12, 5) / 1000), "cpc-btc-updown-5m-2026-11-21-1205z");
+  assert.equal(usSlugFor(Date.UTC(2026, 10, 21, 9, 0) / 1000, "15m"), "cpc-btc-updown-15m-2026-11-21-0900z");
+});
+
+test("US market parsing and resolution", () => {
+  const m = parseUsMarket(
+    { slug: "cpc-btc-updown-5m-x", question: "BTC Up or Down 5m", assetPriceTerms: { priceToBeat: { value: "58072.24" } } },
+    SLOT,
+    "5m",
+  );
+  assert.equal(m.priceToBeat, 58072.24);
+  assert.equal(m.feedSmoothingSec, 60);
+  assert.equal(m.slotEnd, SLOT + 300);
+  assert.equal(parseUsResolution({ status: "MARKET_STATUS_RESOLVED", outcomePrices: '["0","1"]' }), "DOWN");
+  assert.equal(parseUsResolution({ status: "MARKET_STATUS_RESOLVED", outcomePrices: '["1","0"]' }), "UP");
+  assert.equal(parseUsResolution({ status: "MARKET_STATUS_OPEN", outcomePrices: '["1","0"]' }), null);
+});
+
+test("US YES book becomes Up and Down quotes (NO = 1 − YES)", () => {
+  const level = (p: string, q: string) => ({ px: { value: p }, qty: q });
+  const [up, down] = quotesFromYesBook("s", [level("0.67", "20"), level("0.66", "500")], [level("0.69", "9"), level("0.68", "294.45")]);
+  assert.deepEqual([up!.bestBid, up!.bestAsk, up!.askSize], [0.67, 0.68, 294.45]);
+  assert.deepEqual([down!.bestBid, down!.bestAsk, down!.askSize, down!.bidSize], [0.32, 0.33, 20, 294.45]);
+});
+
+test("US orders: YES-side pricing, IOC, automatic flag; fills summarized per side", () => {
+  assert.equal(yesPriceFor("UP", 0.68), 0.68);
+  assert.equal(yesPriceFor("DOWN", 0.33), 0.67); // buy NO at 0.33 = sell YES at 0.67
+  const o = buildOrder("s", "ORDER_INTENT_BUY_SHORT", 0.67, 15.15);
+  assert.equal(o.price!.value, "0.67");
+  assert.equal(o.tif, "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL");
+  assert.equal(o.manualOrderIndicator, "MANUAL_ORDER_INDICATOR_AUTOMATIC");
+  const resp = {
+    id: "o1",
+    executions: [
+      { id: "e1", type: "EXECUTION_TYPE_PARTIAL_FILL", lastShares: "10", lastPx: { value: "0.67" }, commissionNotionalCollected: { value: "0.15" } },
+      { id: "e2", type: "EXECUTION_TYPE_FILL", lastShares: "5", lastPx: { value: "0.66" } },
+      { id: "e3", type: "EXECUTION_TYPE_CANCELED" },
+    ],
+  } as never;
+  const sum = summarizeExecutions(resp, "DOWN");
+  assert.equal(sum.shares, 15);
+  assert.ok(Math.abs(sum.notional - (10 * 0.33 + 5 * 0.34)) < 1e-9);
+  assert.equal(sum.commission, 0.15);
+});
+
+test("US fee formula matches the published schedule", () => {
+  // docs.polymarket.us/fees: 100 contracts at $0.50, θ=0.0695 → $1.74 (rounded)
+  assert.ok(Math.abs(100 * feePerContract(0.0695, 0.5) - 1.7375) < 1e-9);
+});
+
+test("smoothed-feed model: lag-corrected, tighter near settlement, ties go Up", () => {
+  const base = { openPrice: 100_000, volBpsPerSqrtSec: 1, smoothSec: 60 };
+  assert.ok(Math.abs(probUp({ ...base, currentPrice: 100_000, secondsLeft: 200, slopePerSec: 0 }) - 0.5) < 1e-6);
+  // Feed flat at the open but rising fast: raw price is already above it → favour Up.
+  assert.ok(probUp({ ...base, currentPrice: 100_000, secondsLeft: 200, slopePerSec: 1 }) > 0.55);
+  // Same small lead is far more decisive with 5s left than with 200s left.
+  const far = probUp({ ...base, currentPrice: 100_010, secondsLeft: 200 });
+  const near = probUp({ ...base, currentPrice: 100_010, secondsLeft: 5 });
+  assert.ok(near > far && near > 0.9, `near=${near} far=${far}`);
+  assert.equal(probUp({ ...base, currentPrice: 100_000, secondsLeft: 0 }), 0.99);
+});
+
+test("paper broker charges the US taker fee on buys and sells", async () => {
+  const b = new PaperBroker(100, 0.0695);
+  const q = { side: "UP" as const, tokenId: "U", bestAsk: 0.5, askSize: 1000, bestBid: 0.5, bidSize: 1000 };
+  const fill = await b.buy({} as never, { side: "UP", tokenId: "U", price: 0.5, modelProb: 0.6, edge: 0.05 }, 10, q);
+  assert.ok(fill && fill.costUsd <= 10 + 1e-9);
+  assert.ok(fill.shares < 20); // fee reduces shares bought
+  const sold = await b.sell({ side: "UP", marketSlug: "s", tokenId: "U", shares: fill.shares, price: 0.5 }, q);
+  assert.ok(sold && sold.proceedsUsd < fill.shares * 0.5);
+});
+
+test("backtest synthetic book always charges a spread", () => {
+  const [up, down] = syntheticQuotes("s", { long: 0.6, short: 0.41 }, 0.01);
+  assert.equal(up!.bestAsk, 0.61);
+  assert.equal(up!.bestBid, 0.58);
+  assert.equal(down!.bestAsk, 0.42);
+  assert.equal(down!.bestBid, 0.39);
 });

@@ -10,6 +10,7 @@
  */
 import { RealTimeDataClient, type Message } from "@polymarket/real-time-data-client";
 import { log, warn } from "./log.js";
+import type { UsGateway } from "./usVenue.js";
 
 export interface Tick {
   tsMs: number; // source timestamp
@@ -47,6 +48,28 @@ export class PriceTape {
     const tick = this.ticks.find((t) => t.tsMs >= boundary);
     if (!tick || tick.tsMs - boundary > OPEN_TOLERANCE_MS) return null;
     return tick.price;
+  }
+
+  /** Average change per second over the lookback (price units/second). */
+  slopePerSec(lookbackMs = 10_000): number | null {
+    const latest = this.latest();
+    if (!latest) return null;
+    const past = this.ticks.filter((t) => t.tsMs <= latest.tsMs - lookbackMs).pop();
+    if (!past) return null;
+    return (latest.price - past.price) / ((latest.tsMs - past.tsMs) / 1000);
+  }
+
+  /** Simple mean of tick prices with tsMs in [fromMs, toMs). Null if none. */
+  mean(fromMs: number, toMs: number): number | null {
+    let sum = 0;
+    let n = 0;
+    for (const t of this.ticks) {
+      if (t.tsMs >= fromMs && t.tsMs < toMs) {
+        sum += t.price;
+        n++;
+      }
+    }
+    return n ? sum / n : null;
   }
 
   /**
@@ -130,4 +153,33 @@ export function startChainlinkFeed(tape: PriceTape): { stop: () => void } {
   });
   client.connect();
   return { stop: () => client.disconnect() };
+}
+
+/**
+ * Polls CF Benchmarks BRTI (the index Polymarket US settles on) from Polymarket US's
+ * public asset-prices endpoint, once a second. Only completed seconds are used.
+ */
+export function startBrtiFeed(tape: PriceTape, gw: UsGateway, everyMs = 1000): { stop: () => void } {
+  let stopped = false;
+  let failures = 0;
+  let announced = false;
+  const loop = async () => {
+    while (!stopped) {
+      try {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const ticks = await gw.brti(nowSec - 90, nowSec);
+        for (const t of ticks) if (t.tsMs < nowSec * 1000) tape.push(t);
+        if (!announced && ticks.length) {
+          log("price feed connected (CF Benchmarks BRTI via Polymarket US)");
+          announced = true;
+        }
+        failures = 0;
+      } catch (err) {
+        if (failures++ % 30 === 0) warn("BRTI poll failed", err);
+      }
+      await new Promise((r) => setTimeout(r, everyMs));
+    }
+  };
+  void loop();
+  return { stop: () => (stopped = true) };
 }

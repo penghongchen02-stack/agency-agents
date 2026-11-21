@@ -37,6 +37,8 @@ export interface SellFill {
 }
 
 export interface SellOrder {
+  side: "UP" | "DOWN";
+  marketSlug: string;
   tokenId: string;
   shares: number;
   price: number; // minimum acceptable price
@@ -85,18 +87,26 @@ export async function quoteFor(
   return { side, tokenId, bestAsk, askSize, bestBid, bidSize };
 }
 
+/**
+ * Simulated fills at the displayed best price, capped at its size. With feeTheta > 0
+ * the taker fee θ·C·p·(1−p) is charged on every fill, as on Polymarket US.
+ */
 export class PaperBroker implements Broker {
   readonly mode = "paper" as const;
-  constructor(private bankroll: number) {}
+  constructor(
+    private bankroll: number,
+    private readonly feeTheta = 0,
+  ) {}
 
   async bankrollUsd(): Promise<number> {
     return this.bankroll;
   }
 
   async buy(_m: SlotMarket, d: Decision, stakeUsd: number, q: Quote): Promise<Fill | null> {
-    const shares = Math.floor(Math.min(stakeUsd / d.price, q.askSize) * 100) / 100;
+    const perShare = d.price + this.feeTheta * d.price * (1 - d.price);
+    const shares = Math.floor(Math.min(stakeUsd / perShare, q.askSize) * 100) / 100;
     if (shares <= 0) return null;
-    const costUsd = shares * d.price;
+    const costUsd = shares * perShare;
     if (costUsd > this.bankroll) return null;
     this.bankroll -= costUsd;
     return { price: d.price, shares, costUsd };
@@ -106,7 +116,7 @@ export class PaperBroker implements Broker {
     if (q.bestBid === null || q.bestBid < o.price) return null;
     const shares = Math.floor(Math.min(o.shares, q.bidSize) * 100) / 100;
     if (shares <= 0) return null;
-    const proceedsUsd = shares * q.bestBid;
+    const proceedsUsd = shares * (q.bestBid - this.feeTheta * q.bestBid * (1 - q.bestBid));
     this.bankroll += proceedsUsd;
     return { price: q.bestBid, shares, proceedsUsd };
   }

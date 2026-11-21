@@ -1,6 +1,8 @@
 # Polymarket BTC Up/Down Bot: our own, transparent version
 
-A small TypeScript bot for Polymarket's **"Bitcoin Up or Down"** 5- and 15-minute markets.
+A small TypeScript bot for **"BTC Up or Down"** 5- and 15-minute markets on
+**[Polymarket US](https://polymarket.us)** (the CFTC-regulated US exchange; the default),
+or on the global polymarket.com.
 It's a clean rewrite inspired by a GitHub repo that turned out to be a
 wallet-key stealer. This version keeps the legitimate idea and drops everything else.
 
@@ -8,17 +10,74 @@ wallet-key stealer. This version keeps the legitimate idea and drops everything 
 > these markets are competitive. Expect the bot to trade rarely and to lose money
 > unless your own testing shows otherwise. It starts in **paper mode**, and you
 > should leave it there until `npm run report` says the model beats the market.
+>
+> **Our own 1000-market backtest on Polymarket US says it doesn't (yet).** See
+> [Backtest results](#backtest-1000-real-polymarket-us-markets).
 
 ## What we dropped from the original (the "weird part")
 
 | Original repo | This version |
 |---|---|
 | Closed-source `.exe` that asked for your private key and **sent it to a Telegram bot** | No binaries. Every line is TypeScript you can read |
-| Dependencies `twapfetch` / `fetchrtds` (one taken down by npm, one unpublished) | Only official `@polymarket/*` packages plus `viem`, with exact versions and a committed lockfile |
+| Dependencies `twapfetch` / `fetchrtds` (one taken down by npm, one unpublished) | Only Polymarket's official SDKs (`polymarket-us`, `@polymarket/*`) plus `viem`, with exact versions and a committed lockfile |
 | "Private calibrated signal, 61% win rate" | The model is ~10 lines in [`src/model.ts`](src/model.ts) with no claims attached |
 | 2-day trial, "contact me on Telegram" | MIT-licensed example code, like the rest of this repo. No licence server, no phoning home |
 | Scratch exits that made the "win rate" look better | Scratches are optional, and the report counts their P&L separately so they can't hide losses |
 | Winner-lock: blindly buying the 90–96¢ favourite | Only buys if our own model also says the favourite is underpriced |
+
+## Polymarket US
+
+`VENUE=us` (the default) trades Polymarket US. These facts were checked against the
+official docs (docs.polymarket.us) **and** against live responses:
+
+| | Polymarket US |
+|---|---|
+| Markets | `cpc-btc-updown-5m-YYYY-MM-DD-HHMMz` (and `-15m-`), with the window start in UTC |
+| Shape | One instrument per market: **YES = Up** (long), **NO = Down** (short). The order book is the YES book, and NO = 1 − YES |
+| Order price | Always the **YES** price. Buying Down at 0.33 is sent as `BUY_SHORT` at 0.67 |
+| Settles on | CF Benchmarks **BRTI**, as the 60-second average before the open (`priceToBeat`) and before the close |
+| Price feed | Public BRTI from `gateway.polymarket.us/v1/asset-prices/history`. **Measured:** the "1-second" series is already that 60s average (each value has `tickCount: 60`, and the value at T−1s equals `priceToBeat` exactly), so it lags the real price by about 30s. The model corrects for this (see `src/model.ts`) |
+| Fees | API taker fee `0.0695 × contracts × p × (1 − p)`, modelled on every fill. The current 70% API rebate is ignored, which is conservative |
+| Orders | Official `polymarket-us` SDK, Ed25519-signed locally. IOC limit orders flagged `MANUAL_ORDER_INDICATOR_AUTOMATIC` (required for API orders). Every order is **previewed first** and refused if the exchange's reading differs from ours |
+| Eligibility | US residents with a verified Polymarket US account. API keys come from polymarket.us/developer |
+| Limits | 25 requests/s per IP. The bot uses about 1.5/s |
+
+## Backtest: 1000 real Polymarket US markets
+
+```bash
+npm run backtest -- --slots 1000 --bankroll 1000
+```
+
+This replays real history through the **real engine, strategies, risk limits, fees and
+ledger**: each market's official open, settlement and winner, the 1-second BRTI feed, and
+the market's own displayed prices (about one point a minute). Historical order books
+aren't published, so the book is the displayed price ±1¢. The bot sees the feed 2s late,
+and can only act at the minutes where the market price is known. Price-history points are
+stamped at the start of their minute but show its end. We measured this and use the
+corrected times: without the fix, the market "sees" up to 60s into the future.
+
+**Result: 1000 markets, 2026-11-17 22:40 → 2026-11-21 12:00 UTC, $5 stake, $1000 paper bankroll**
+
+| Strategy | Buys | Held to close | Wins | Scratches | Staked | P&L | ROI | Max drawdown |
+|---|---|---|---|---|---|---|---|---|
+| fair-value | 99 | 99 | 35 | 0 | $494.81 | **−$44.33** | −9.0% | $78.28 |
+| twap-scratch | 54 | 5 | 3 | 49 | $269.91 | **−$33.07** | −12.3% | $36.60 |
+| winner-lock | 0 | – | – | – | – | – | – | – |
+
+Forecast quality on 3,996 decision points (Brier score, lower is better):
+**model 0.1348 vs market 0.1243**. The market's own prices were the better forecast.
+
+Robustness checks on the same data:
+- No spread and no feed delay (best case): fair-value **−2.4%**, twap-scratch **−8.6%**.
+- `MIN_EDGE=0.10`: fair-value −4.9%, twap-scratch −10.9%.
+- winner-lock never fired. Late in the window, the market already prices the favourite
+  at or above what our model thinks it's worth.
+
+**What this means:** the strategies run correctly end to end, but on this data the
+Polymarket US book prices BTC 5-minute windows better than this model. Every edge the
+bot "found" was mostly the market knowing something the model didn't. Don't go live on
+these settings. Improve the model and re-run the backtest until the model's Brier score
+beats the market's, then paper trade live.
 
 ## Strategies (what we kept from the original)
 
@@ -86,8 +145,9 @@ Requires Node.js ≥ 20.12.
 ```bash
 cd examples/polymarket-btc-bot
 npm ci --ignore-scripts      # exact versions from the lockfile, no install scripts
-cp .env.example .env         # defaults to paper mode
+cp .env.example .env         # paper mode on Polymarket US by default
 npm test                     # unit + engine tests
+npm run backtest             # 1000 real Polymarket US markets (downloads once, then cached)
 npm start                    # paper-trade against live markets
 npm run report               # per strategy: P&L, scratches, Brier score vs market
 ```
@@ -104,22 +164,28 @@ STRATEGY=winner-lock  STATE_DIR=state/wl npm start
 STATE_DIR=state/ts npm run report
 ```
 
-### Going live (only if paper results justify it)
-1. Use a **brand-new, dedicated wallet** holding only what you can afford to lose.
-2. Fill `PRIVATE_KEY`, `FUNDER_ADDRESS` and `SIGNATURE_TYPE` in `.env`, then set
-   `MODE=live` and `LIVE_CONFIRM=I accept the risk of losing this money`.
-3. Start with `STAKE_USD=1` to `5`.
-4. Winning shares show up as redeemable positions on Polymarket. Redeem them there.
-   The bot doesn't move funds on-chain.
+### Going live (only if backtest *and* paper results justify it)
+**Polymarket US** (`VENUE=us`):
+1. Create an API key at polymarket.us/developer. Keep only what you can afford to lose in the account.
+2. Set `US_KEY_ID` and `US_SECRET_KEY` in `.env`, then `MODE=live` and
+   `LIVE_CONFIRM=I accept the risk of losing this money`.
+3. Start with `STAKE_USD=1` to `5`. Settled positions return to your cash balance automatically.
+4. Check your first fills in the Polymarket US app. The order preview guards the price
+   convention, but verify it yourself.
 
-Check that automated trading on Polymarket is allowed where you live before going live.
+**Global** (`VENUE=global`, not for US persons): use a dedicated wallet, and set
+`PRIVATE_KEY`, `FUNDER_ADDRESS` and `SIGNATURE_TYPE`. Redeem winnings on Polymarket.
 
 ## Files
 
 | File | Role |
 |---|---|
-| `src/config.ts` | Validated settings and live-mode gate |
-| `src/priceFeed.ts` | Chainlink BTC/USD via the official RTDS client, open price, TWAP and volatility |
+| `src/config.ts` | Validated settings, venue choice, live-mode gate |
+| `src/venue.ts` | Venue interface, plus the global (Gamma + CLOB) implementation |
+| `src/usVenue.ts` | Polymarket US public data: markets, YES book → Up/Down quotes, BRTI, price history |
+| `src/usBroker.ts` | Polymarket US live orders via the official SDK, preview-checked |
+| `src/backtest.ts` | Real-data replay through the real engine |
+| `src/priceFeed.ts` | Price tape, BRTI poller (US), Chainlink RTDS stream (global) |
 | `src/markets.ts` | Slot math, plus Gamma market lookup and resolution |
 | `src/model.ts` | Fair-value model and trade decision (pure functions) |
 | `src/strategies.ts` | `fair-value`, `twap-scratch`, `winner-lock` |
@@ -134,6 +200,10 @@ Check that automated trading on Polymarket is allowed where you live before goin
   Polymarket's official SDK depends on. No upstream fix exists yet. `ws` is pinned to a patched version.
 - Paper fills assume you get the displayed best ask or bid (up to its size). Real fills can be worse, especially for scratches.
 - Live order responses are trusted for fill sizes. Check your first live trades against the Polymarket UI.
+- The US live broker has not placed a real order: that needs your verified account and
+  keys. Its pieces (pricing, order building, fill parsing) are unit-tested, and the
+  preview check refuses any order the exchange reads differently.
+- The backtest can only act once a minute and uses a synthetic ±1¢ book.
 - The feed is Polymarket's Chainlink stream. If it lags the settlement oracle, the open price can be slightly off.
 - Not financial advice.
 

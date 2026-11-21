@@ -9,22 +9,32 @@ export const LIVE_CONFIRM_PHRASE = "I accept the risk of losing this money";
 export type Mode = "paper" | "live";
 export type StrategyName = "fair-value" | "twap-scratch" | "winner-lock";
 export type MarketWindow = "5m" | "15m";
+export type Venue = "us" | "global";
 
 export const WINDOW_SECONDS: Record<MarketWindow, number> = { "5m": 300, "15m": 900 };
 
 export interface Config {
   mode: Mode;
+  /** "us" = Polymarket US (CFTC-regulated, polymarket.us). "global" = polymarket.com. */
+  venue: Venue;
   strategy: StrategyName;
   marketWindow: MarketWindow;
   slotSeconds: number;
 
-  privateKey: string; // only populated in live mode
+  // global venue credentials (live only)
+  privateKey: string;
   funderAddress: string;
   signatureType: 0 | 1 | 2;
+  // US venue credentials (live only)
+  usKeyId: string;
+  usSecretKey: string;
 
   // Shared model / execution settings
   minEdge: number;
+  /** Extra safety margin per share for slippage (and, on global, fees). */
   feeBuffer: number;
+  /** Taker fee coefficient θ: fee = θ × contracts × p × (1 − p). */
+  feeTheta: number;
   minVolBpsPerSqrtSec: number;
   pollMs: number;
 
@@ -61,6 +71,7 @@ export interface Config {
   stateDir: string;
   clobHost: string;
   gammaHost: string;
+  usGatewayHost: string;
 }
 
 type Env = Record<string, string | undefined>;
@@ -88,12 +99,14 @@ function band(lo: number, hi: number, what: string): void {
 
 export function loadConfig(env: Env = process.env): Config {
   const mode = oneOf(env, "MODE", "paper", ["paper", "live"] as const);
+  const venue = oneOf(env, "VENUE", "us", ["us", "global"] as const);
   const marketWindow = oneOf(env, "MARKET_WINDOW", "5m", ["5m", "15m"] as const);
   const slot = WINDOW_SECONDS[marketWindow];
   const stakeUsd = num(env, "STAKE_USD", 5, 1, 10_000);
 
   const cfg: Config = {
     mode,
+    venue,
     strategy: oneOf(env, "STRATEGY", "fair-value", ["fair-value", "twap-scratch", "winner-lock"] as const),
     marketWindow,
     slotSeconds: slot,
@@ -101,9 +114,14 @@ export function loadConfig(env: Env = process.env): Config {
     privateKey: "",
     funderAddress: (env.FUNDER_ADDRESS ?? "").trim(),
     signatureType: num(env, "SIGNATURE_TYPE", 1, 0, 2) as 0 | 1 | 2,
+    usKeyId: "",
+    usSecretKey: "",
 
     minEdge: num(env, "MIN_EDGE", 0.05, 0, 0.5),
-    feeBuffer: num(env, "FEE_BUFFER", 0.02, 0, 0.2),
+    // US fees are modelled exactly (feeTheta), so the buffer only covers slippage there.
+    feeBuffer: num(env, "FEE_BUFFER", venue === "us" ? 0.01 : 0.02, 0, 0.2),
+    // Polymarket US API taker fee θ (docs.polymarket.us/fees). Rebates are ignored (conservative).
+    feeTheta: num(env, "FEE_THETA", venue === "us" ? 0.0695 : 0, 0, 0.5),
     minVolBpsPerSqrtSec: num(env, "MIN_VOL_BPS_PER_SQRT_SEC", 0.8, 0.01, 100),
     pollMs: num(env, "POLL_MS", 2000, 250, 60_000),
 
@@ -136,6 +154,7 @@ export function loadConfig(env: Env = process.env): Config {
     stateDir: env.STATE_DIR ?? "state",
     clobHost: env.CLOB_HOST ?? "https://clob.polymarket.com",
     gammaHost: env.GAMMA_HOST ?? "https://gamma-api.polymarket.com",
+    usGatewayHost: env.US_GATEWAY_HOST ?? "https://gateway.polymarket.us",
   };
 
   band(cfg.minEntryPrice, cfg.maxEntryPrice, "MIN/MAX_ENTRY_PRICE");
@@ -149,15 +168,29 @@ export function loadConfig(env: Env = process.env): Config {
     if ((env.LIVE_CONFIRM ?? "").trim() !== LIVE_CONFIRM_PHRASE) {
       throw new Error(`MODE=live requires LIVE_CONFIRM="${LIVE_CONFIRM_PHRASE}"`);
     }
-    const pk = (env.PRIVATE_KEY ?? "").trim();
-    const normalized = pk.startsWith("0x") ? pk : `0x${pk}`;
-    if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) {
-      throw new Error("PRIVATE_KEY must be a 32-byte hex key in live mode");
+    if (cfg.venue === "us") {
+      const keyId = (env.US_KEY_ID ?? "").trim();
+      const secret = (env.US_SECRET_KEY ?? "").trim();
+      if (!/^[0-9a-fA-F-]{36}$/.test(keyId)) {
+        throw new Error("US_KEY_ID must be your Polymarket US API key id (a UUID) in live mode");
+      }
+      const bytes = /^[A-Za-z0-9+/]+={0,2}$/.test(secret) ? Buffer.from(secret, "base64").length : 0;
+      if (bytes !== 32 && bytes !== 64) {
+        throw new Error("US_SECRET_KEY must be the base64 Ed25519 secret from polymarket.us/developer");
+      }
+      cfg.usKeyId = keyId;
+      cfg.usSecretKey = secret;
+    } else {
+      const pk = (env.PRIVATE_KEY ?? "").trim();
+      const normalized = pk.startsWith("0x") ? pk : `0x${pk}`;
+      if (!/^0x[0-9a-fA-F]{64}$/.test(normalized)) {
+        throw new Error("PRIVATE_KEY must be a 32-byte hex key in live mode");
+      }
+      if (!/^0x[0-9a-fA-F]{40}$/.test(cfg.funderAddress)) {
+        throw new Error("FUNDER_ADDRESS must be your Polymarket wallet address in live mode");
+      }
+      cfg.privateKey = normalized;
     }
-    if (!/^0x[0-9a-fA-F]{40}$/.test(cfg.funderAddress)) {
-      throw new Error("FUNDER_ADDRESS must be your Polymarket wallet address in live mode");
-    }
-    cfg.privateKey = normalized;
   }
 
   return cfg;
@@ -170,6 +203,7 @@ export function loadDotEnv(path = ".env"): void {
 
 /** A copy of the config that is safe to print. */
 export function describeConfig(cfg: Config): Record<string, unknown> {
-  const { privateKey, ...rest } = cfg;
-  return { ...rest, privateKey: privateKey ? "[set, hidden]" : "[not set]" };
+  const { privateKey, usSecretKey, ...rest } = cfg;
+  const hide = (v: string) => (v ? "[set, hidden]" : "[not set]");
+  return { ...rest, privateKey: hide(privateKey), usSecretKey: hide(usSecretKey) };
 }

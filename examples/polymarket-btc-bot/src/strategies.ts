@@ -13,7 +13,7 @@
  */
 import type { Config, StrategyName } from "./config.js";
 import type { Position } from "./log.js";
-import { decide, type Quote } from "./model.js";
+import { decide, feePerContract, type Quote } from "./model.js";
 
 export type Action =
   | {
@@ -70,6 +70,7 @@ function buyFrom(
     quotes: ctx.quotes,
     minEdge: p.minEdge,
     feeBuffer: p.feeBuffer,
+    feeTheta: ctx.cfg.feeTheta,
     minEntryPrice: p.lo,
     maxEntryPrice: p.hi,
     onlySide: p.onlySide,
@@ -111,7 +112,7 @@ export const twapScratch: Strategy = {
       // our model thinks the shares are worth. Never sell into a 5s-to-close book.
       if (q?.bestBid != null && q.bidSize > 0 && ctx.secLeft > 5) {
         const flipped = prob < cfg.scratchExitProb;
-        const overpaid = q.bestBid >= prob;
+        const overpaid = q.bestBid - feePerContract(cfg.feeTheta, q.bestBid) >= prob;
         if (flipped || overpaid) {
           return {
             kind: "sell",

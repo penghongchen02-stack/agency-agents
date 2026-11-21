@@ -10,25 +10,55 @@
  *   - no trading on a stale feed or an untrusted open price,
  *   - every buy goes through RiskManager.canEnter.
  */
-import type { ClobClient } from "@polymarket/clob-client-v2";
-import { quoteFor, type Broker } from "./broker.js";
+import type { Broker } from "./broker.js";
 import type { Config } from "./config.js";
 import { log, replayLedger, warn, type Ledger, type Position } from "./log.js";
-import { slotStartFor, type Gamma, type SlotMarket } from "./markets.js";
+import { slotStartFor, type SlotMarket } from "./markets.js";
 import { probUp } from "./model.js";
 import type { PriceTape } from "./priceFeed.js";
 import type { RiskManager } from "./risk.js";
 import { strategyFor, type Action, type Strategy } from "./strategies.js";
+import type { Venue } from "./venue.js";
 
 const SETTLE_DELAY_SEC = 20;
 const SETTLE_RETRY_MS = 15_000;
 const MAX_TICK_AGE_MS = 10_000;
 
+/**
+ * The model's P(up) for a market at `nowMs`, from the price tape. Shared by the engine
+ * and the backtest so both use exactly the same calculation.
+ */
+export function fairProbUp(
+  tape: PriceTape,
+  market: SlotMarket,
+  openPrice: number,
+  nowMs: number,
+  cfg: Config,
+  useTwap: boolean,
+): number | null {
+  const latest = tape.latest();
+  const measuredVol = tape.volBpsPerSqrtSec();
+  if (!latest || measuredVol === null) return null;
+  const N = market.feedSmoothingSec;
+  // A smoothed feed (US) is already an average, so a TWAP on top would only add lag.
+  const price = useTwap && N === 0 ? (tape.twap(cfg.twapWindowSec * 1000) ?? latest.price) : latest.price;
+  // For a smoothed feed the measured 1s volatility is σ_raw/√N; scale it back up.
+  const rawVol = N > 0 ? measuredVol * Math.sqrt(N) : measuredVol;
+  const settleAtSec = market.slotEnd - (N > 0 ? 1 : 0);
+  return probUp({
+    openPrice,
+    currentPrice: price,
+    secondsLeft: settleAtSec - nowMs / 1000,
+    volBpsPerSqrtSec: Math.max(rawVol, cfg.minVolBpsPerSqrtSec),
+    smoothSec: N,
+    slopePerSec: N > 0 ? (tape.slopePerSec(10_000) ?? 0) : 0,
+  });
+}
+
 export interface EngineDeps {
   cfg: Config;
   tape: PriceTape;
-  gamma: Gamma;
-  clob: ClobClient;
+  venue: Venue;
   broker: Broker;
   risk: RiskManager;
   ledger: Ledger;
@@ -78,7 +108,7 @@ export class Engine {
       if (nowMs / 1000 < pos.slotEnd + SETTLE_DELAY_SEC) continue;
       if (nowMs - (this.lastSettleCheck.get(pos.slotStart) ?? 0) < SETTLE_RETRY_MS) continue;
       this.lastSettleCheck.set(pos.slotStart, nowMs);
-      const winner = await this.d.gamma.resolution(pos.slotStart);
+      const winner = await this.d.venue.resolution(pos.slotStart);
       if (!winner) continue;
 
       const payoutUsd = pos.side === winner ? pos.shares : 0;
@@ -109,7 +139,7 @@ export class Engine {
   private async marketFor(slotStart: number): Promise<SlotMarket | null> {
     const cached = this.markets.get(slotStart);
     if (cached && (cached.market || this.now() - cached.fetchedMs < 10_000)) return cached.market;
-    const market = await this.d.gamma.market(slotStart);
+    const market = await this.d.venue.market(slotStart);
     this.markets.set(slotStart, { market, fetchedMs: this.now() });
     for (const key of this.markets.keys()) if (key < slotStart - 3600) this.markets.delete(key);
     return market;
@@ -138,32 +168,24 @@ export class Engine {
     const last = this.lastEval.get(slotStart) ?? 0;
     if (nowMs - last < s.evalEveryMs(cfg)) return;
 
-    const openPrice = tape.openPrice(slotStart);
-    if (openPrice === null) {
+    const latest = tape.latest();
+    if (!latest || nowMs - latest.tsMs > MAX_TICK_AGE_MS) return; // stale feed: wait, don't guess
+    if (tape.volBpsPerSqrtSec() === null) return;
+    const market = await this.marketFor(slotStart);
+    if (!market) return;
+    // Polymarket US publishes the official open (priceToBeat); otherwise we must have seen it.
+    const openPrice = market.priceToBeat ?? tape.openPrice(slotStart);
+    if (openPrice === undefined || openPrice === null || !(openPrice > 0)) {
       if (!position) this.skip(slotStart, "no trustworthy open price (joined mid-slot?)");
       return;
     }
-    const latest = tape.latest();
-    if (!latest || nowMs - latest.tsMs > MAX_TICK_AGE_MS) return; // stale feed: wait, don't guess
-    const measuredVol = tape.volBpsPerSqrtSec();
-    if (measuredVol === null) return;
-    const market = await this.marketFor(slotStart);
-    if (!market) return;
 
     this.lastEval.set(slotStart, nowMs);
     for (const k of this.lastEval.keys()) if (k < slotStart) this.lastEval.delete(k);
 
-    const price = s.useTwap ? (tape.twap(cfg.twapWindowSec * 1000) ?? latest.price) : latest.price;
-    const pUp = probUp({
-      openPrice,
-      currentPrice: price,
-      secondsLeft: market.slotEnd - nowMs / 1000,
-      volBpsPerSqrtSec: Math.max(measuredVol, cfg.minVolBpsPerSqrtSec),
-    });
-    const quotes = await Promise.all([
-      quoteFor(this.d.clob, "UP", market.upTokenId),
-      quoteFor(this.d.clob, "DOWN", market.downTokenId),
-    ]);
+    const pUp = fairProbUp(tape, market, openPrice, nowMs, cfg, s.useTwap);
+    if (pUp === null) return;
+    const quotes = await this.d.venue.quotes(market);
 
     const action = s.act({ cfg, secIn, secLeft, pUp, quotes, position });
     if (!action) return;
@@ -239,7 +261,10 @@ export class Engine {
     position: Position,
   ): Promise<void> {
     const shares = Math.min(a.shares, position.shares);
-    const fill = await this.d.broker.sell({ tokenId: position.tokenId, shares, price: a.price }, quote);
+    const fill = await this.d.broker.sell(
+      { side: position.side, marketSlug: market.slug, tokenId: position.tokenId, shares, price: a.price },
+      quote,
+    );
     if (!fill) return;
     const basis = position.costUsd * (fill.shares / position.shares);
     const pnlUsd = fill.proceedsUsd - basis;
