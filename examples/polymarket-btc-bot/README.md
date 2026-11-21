@@ -120,6 +120,8 @@ fixed before seeing results and judged only on markets they weren't tuned on.
 | ETH 5m "bounce" (bet against the last window), confirmed on unseen markets | 2,075 unseen ETH 5m markets | Failed: Up after Up 47.7% vs after Down 47.9%, −1.45¢ (t −1.51) |
 | Dump-and-hedge (popular online idea) | BTC/ETH 5m markets | −3 to −8¢/share |
 | Latency arbitrage: Coinbase vs Polymarket US books, recorded every second | 60 live BTC/ETH 5m/15m markets (~2h) | Not proven: +4.8¢/share but t 0.80 (needs t > 2.5); model Brier 0.1634 vs market 0.1597; market barely follows Coinbase (corr 0.11) |
+| 10,000-bot tournament: 10 signals × entry time × price band × threshold, on BTC/ETH 5m/15m/1h; top 25 sent to holdout | 8,418 markets | 0 of 25 passed; top 25 averaged −3.85¢ on holdout. 143 bots looked good (z > 2) vs 150 in a fake no-edge world, so all luck |
+| Best near-miss (ETH 15m, follow the last move at 9 min), pre-registered check on older markets | 1,491 unseen ETH 15m markets | Failed: −1.30¢/share over 472 trades |
 
 **Conclusion so far:** Polymarket US crypto Up/Down markets are efficiently priced. Any
 strategy that buys at the ask pays about 2–3¢ per share in costs, and nothing we found
