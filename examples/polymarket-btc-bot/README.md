@@ -122,6 +122,9 @@ fixed before seeing results and judged only on markets they weren't tuned on.
 | Latency arbitrage: Coinbase vs Polymarket US books, recorded every second | 60 live BTC/ETH 5m/15m markets (~2h) | Not proven: +4.8¢/share but t 0.80 (needs t > 2.5); model Brier 0.1634 vs market 0.1597; market barely follows Coinbase (corr 0.11) |
 | 10,000-bot tournament: 10 signals × entry time × price band × threshold, on BTC/ETH 5m/15m/1h; top 25 sent to holdout | 8,418 markets | 0 of 25 passed; top 25 averaged −3.85¢ on holdout. 143 bots looked good (z > 2) vs 150 in a fake no-edge world, so all luck |
 | Best near-miss (ETH 15m, follow the last move at 9 min), pre-registered check on older markets | 1,491 unseen ETH 15m markets | Failed: −1.30¢/share over 472 trades |
+| Polymarket-only hedged maker: rest a bid one cent above the best bid on one leg of a locked pair, buy the other leg when filled | 40 simulated fills, 5 hours of live books | Failed: all 40 lost, −34¢/pair on average. Resting orders only fill when the price is moving against you |
+| Kalshi + Polymarket US locked pair (YES on one venue, NO on the other, same BRTI settlement), taker on both legs, 10,000-bot race | 4 settlement hours, ~30 holdout trades | Top 25 passed on unseen hours (+1.5 to +2.9¢/pair) **if bought instantly**. Same bots buying 20 s or 60 s later all lost (−3 to −5¢) |
+| Same, with both venues read within ~0.2 s (fast recorder, hourly/daily/weekly ladders) | first ~1 hour, 17 trades | Instant +2.1¢; 3 s late −2.3¢; 10 s late −6.6¢. Gaps last ~9 s but prices jump first. Still recording |
 
 **Conclusion so far:** Polymarket US crypto Up/Down markets are efficiently priced. Any
 strategy that buys at the ask pays about 2–3¢ per share in costs, and nothing we found
