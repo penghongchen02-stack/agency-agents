@@ -116,6 +116,10 @@ fixed before seeing results and judged only on markets they weren't tuned on.
 | Favourite–long-shot lead (hourly, late favourite 85–97¢), confirmed on 20 unseen days | 1,906 hourly markets | Failed: SOL +0.2¢ (t 0.17), pooled +0.4¢ (t 0.62) |
 | Guaranteed-payout combos across hourly ladders, ranges and Up/Down (live order books) | 80 live sweeps | 0 found; closest was 2.3¢ short of break-even |
 | Market-maker bot (paper, live books, pessimistic fills) | 10 live markets | −$58.80: filled mostly just before the price went against it |
+| Fast fair-value using Coinbase minute prices | ~2,000 BTC/ETH 5m markets | Lost: BTC −5.6¢/share (t −2.6), ETH −3.3¢ |
+| ETH 5m "bounce" (bet against the last window), confirmed on unseen markets | 2,075 unseen ETH 5m markets | Failed: Up after Up 47.7% vs after Down 47.9%, −1.45¢ (t −1.51) |
+| Dump-and-hedge (popular online idea) | BTC/ETH 5m markets | −3 to −8¢/share |
+| Latency arbitrage: Coinbase vs Polymarket US books, recorded every second | 60 live BTC/ETH 5m/15m markets (~2h) | Not proven: +4.8¢/share but t 0.80 (needs t > 2.5); model Brier 0.1634 vs market 0.1597; market barely follows Coinbase (corr 0.11) |
 
 **Conclusion so far:** Polymarket US crypto Up/Down markets are efficiently priced. Any
 strategy that buys at the ask pays about 2–3¢ per share in costs, and nothing we found
