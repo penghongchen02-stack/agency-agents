@@ -100,6 +100,25 @@ bot "found" was mostly the market knowing something the model didn't. Don't go l
 these settings. Improve the model and re-run the backtest until the model's Brier score
 beats the market's, then paper trade live.
 
+## Research log: searching for a strategy that works
+
+All tests use real Polymarket US data and count the spread and taker fee. Ideas were
+fixed before seeing results and judged only on markets they weren't tuned on.
+
+| What we tried | Data | Result |
+|---|---|---|
+| Fair-value model, re-tuned, blended with market, rebuilt live price | 3000 BTC 5m markets | All worse than the market's own prices |
+| 7 trading patterns (follow/fade jumps, model gaps, late favourite or long shot, early fade, stacked model) | 3000 BTC 5m markets | All lost about the spread plus fee (2–3¢/share) |
+| 6 patterns × 12 markets (BTC/ETH/SOL/XRP × 5m/15m/1h) = 72 tests | 6,560 markets | 0 passed |
+| Favourite–long-shot lead (hourly, late favourite 85–97¢), confirmed on 20 unseen days | 1,906 hourly markets | Failed: SOL +0.2¢ (t 0.17), pooled +0.4¢ (t 0.62) |
+| Guaranteed-payout combos across hourly ladders, ranges and Up/Down (live order books) | 80 live sweeps | 0 found; closest was 2.3¢ short of break-even |
+| Market-maker bot (paper, live books, pessimistic fills) | 10 live markets | −$58.80: filled mostly just before the price went against it |
+
+**Conclusion so far:** Polymarket US crypto Up/Down markets are efficiently priced. Any
+strategy that buys at the ask pays about 2–3¢ per share in costs, and nothing we found
+recovers that. Searching forever would eventually "find" a strategy that only worked by
+luck, so a new idea must be fixed in advance and tested on data it has never seen.
+
 ## Strategies (what we kept from the original)
 
 Pick one with `STRATEGY=` in `.env`. All three share the same model, risk limits, paper
