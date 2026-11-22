@@ -265,6 +265,7 @@ STATE_DIR=state/ts npm run report
 | `src/engine.ts` | Decision loop, execution, settlement and restart recovery |
 | `src/log.ts` | Redacting logger, ledger, and ledger replay |
 | `src/report.ts` | Scorecard from the ledger |
+| Polymarket-US-only live paper bots (Kalshi stopped at the user's request), 2026-11-22 | live, real order-book prices, real settlement | **Bot 7 final-minute** (settlement-average bot, BTC/ETH/SOL/XRP 5m): 200 markets, 145 won vs 117 expected, +13.0¢/share, z +5.3, +$1,676 paper — the only non-lock bot to pass live. Longshot fade 151/151 won (+$228, tail risk). Follow-a-jump +$337 (41 trades, fading). Polymarket-only locks: all settled locks paid (+$128). Lost: rebuilt Bosona bot (A −$990, B −$988, C −$6,684), options fair value (−$3,160), maker (−$3,133), strategy loop (−$688). 50,000-variation history lab: every pass was luck or a stale-price artifact |
 
 ## Known limitations
 - `npm audit` reports low-severity advisories in `ethers` v5 and `elliptic`, which
