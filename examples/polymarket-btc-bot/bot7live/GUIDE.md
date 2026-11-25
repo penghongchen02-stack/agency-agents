@@ -80,6 +80,12 @@ cd ~/polybot/bot7live && python3 -I test_bot7live.py
 ```
 These use a fake server on your computer; no real orders are placed. It must end with `ALL PASSED`.
 
+Then prove LIVE decides and orders exactly like paper bot 7:
+```
+python3 -I test_same_as_paper.py 24
+```
+This feeds both bots the same simulated 24 hours of prices and order books and compares every trade and every order. It must print three PASS lines.
+
 ### 6. Dry run for at least a few hours (no orders)
 ```
 cp config.example.json config.json
@@ -131,7 +137,14 @@ This shows real fills per day, with wins, losses and profit from Polymarket's of
 | `daily_max_loss_usd` | 50 | Stops new orders when today's settled losses reach this |
 | `down_price_confirmed` | false | Lets live mode buy Down. Set to true only after step 7. |
 
-Raise limits slowly, only after several days of real results that look like the paper results. Bot 7's paper trades averaged about $37 per trade at up to 100 shares, and used at most about $321 at once.
+Raise limits slowly, only after several days of real results that look like the paper results.
+
+**Paper bot 7 had no money limits.** For comparison, on paper it:
+- spent up to **$96 on one trade** (average $37, up to 100 shares);
+- spent about **$8,000–15,000 in total per day**. The same few hundred dollars was reused all day, since each market settles within minutes. At most about $321 was in use at once.
+- had a worst drop of **$180** within a day, and no losing day.
+
+To trade exactly like paper you would set `max_usd_per_trade` 100, `daily_max_spend_usd` about 15000 and `daily_max_loss_usd` about 300. Only do that after the small test matches paper.
 
 ## Files
 
@@ -142,6 +155,7 @@ Raise limits slowly, only after several days of real results that look like the 
 | `config.example.json` | Settings template; copy it to `config.json` |
 | `live_report.py` | Real results per day |
 | `test_bot7live.py` | Offline tests against a fake server |
+| `test_same_as_paper.py` | Proves LIVE makes the same trades and orders as paper bot 7 |
 | `live_trades.jsonl` | Every signal: previewed, filled, not filled, skipped, with the reason |
 | `live_errors.log`, `live_run.log` | What happened while running |
 
