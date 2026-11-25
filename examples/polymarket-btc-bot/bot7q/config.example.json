@@ -1,0 +1,16 @@
+{
+  "mode": "dry_run",
+  "usd_per_order": 2.0,
+  "margin": 0.06,
+  "requote": 0.02,
+  "min_requote_s": 3,
+  "quote_start_s": 90,
+  "quote_end_s": 8,
+  "expire_before_end_s": 5,
+  "fair_min": 0.08,
+  "fair_max": 0.92,
+  "max_open_orders": 16,
+  "max_new_orders_per_s": 4,
+  "daily_max_spend_usd": 50.0,
+  "daily_max_loss_usd": 10.0
+}
