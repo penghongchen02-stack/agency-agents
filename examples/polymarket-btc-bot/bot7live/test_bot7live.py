@@ -3,7 +3,7 @@ Usage: python3 -I test_bot7live.py"""
 import base64, json, os, sys, tempfile, threading, time, http.server
 from cryptography.hazmat.primitives.asymmetric import ed25519
 D = os.path.dirname(os.path.abspath(__file__))
-SEEN = []
+SEEN = []; GETS = []
 class Fake(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def _send(self, code, obj):
@@ -16,13 +16,16 @@ class Fake(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         SEEN.append((self.command, self.path, None, self._auth_ok()))
         if self.path == "/v1/account/balances": return self._send(200, {"balances": [{"buyingPower": 500, "currency": "USD"}]})
-        if self.path.startswith("/v1/order/"): return self._send(200, {"order": {"cumQuantity": 5, "avgPx": {"value": "0.86"}, "state": "ORDER_STATE_FILLED", "commissionNotionalTotalCollected": {"value": "0.04"}}})
+        if self.path.startswith("/v1/order/"):
+            GETS.append(1)
+            if len(GETS) < 3: return self._send(200, {"order": {"cumQuantity": 0, "state": "ORDER_STATE_PENDING_NEW"}})
+            return self._send(200, {"order": {"cumQuantity": 5, "leavesQuantity": 0, "avgPx": {"value": "0.86"}, "state": "ORDER_STATE_FILLED", "commissionNotionalTotalCollected": {"value": "0.04"}}})
         self._send(404, {})
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         SEEN.append((self.command, self.path, body, self._auth_ok()))
         if self.path == "/v1/order/preview": return self._send(200, {"order": {"price": body["price"]}})
-        if self.path == "/v1/orders": return self._send(200, {"id": "ord-1", "executions": [{"lastShares": "5", "lastPx": {"value": "0.86"}}]})
+        if self.path == "/v1/orders": return self._send(200, {"id": "ord-1", "executions": []})
         self._send(404, {})
 key = ed25519.Ed25519PrivateKey.generate(); PUB = key.public_key()
 srv = http.server.HTTPServer(("127.0.0.1", 0), Fake); threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -50,7 +53,7 @@ L.act(api, dict(c, mode="live"), L.Limits(c), out, dict(sig, side="DOWN", price=
 r = json.loads(open(L.LOG).read().splitlines()[-1]); res.append(ok(r["status"] == "skipped", "live: Down is off until confirmed"))
 L.act(api, dict(c, mode="live"), L.Limits(c), out, sig)
 r = json.loads(open(L.LOG).read().splitlines()[-1])
-res.append(ok(r["status"] == "filled" and r["filled"] == 5 and abs(r["cost_usd"] - 4.3) < 1e-9 and r["fee_usd"] == 0.04, "live order: fill, cost and fee recorded"))
+res.append(ok(r["status"] == "filled" and r["filled"] == 5 and abs(r["cost_usd"] - 4.3) < 1e-9 and r["fee_usd"] == 0.04, "live order: still pending at first check, bot waits and records the fill, cost and fee"))
 open(os.path.join(D, "STOP"), "w").close()
 try:
     L.act(api, dict(c, mode="live"), L.Limits(c), out, sig)

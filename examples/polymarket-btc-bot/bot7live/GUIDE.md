@@ -158,6 +158,7 @@ To trade exactly like paper you would set `max_usd_per_trade` 100, `daily_max_sp
 | `live_report.py` | Real results per day |
 | `test_bot7live.py` | Offline tests against a fake server |
 | `test_same_as_paper.py` | Proves LIVE makes the same trades and orders as paper bot 7 |
+| `why_not_filled.py` | Explains missed orders in plain words (shows no keys) |
 | `live_trades.jsonl` | Every signal: previewed, filled, not filled, skipped, with the reason |
 | `live_errors.log`, `live_run.log` | What happened while running |
 

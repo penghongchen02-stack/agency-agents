@@ -191,18 +191,37 @@ def act(api, conf, lim, out, signal):
                         if q > 0:
                             pay = p if side == "UP" else 1 - p      # fills are YES prices; convert to what we paid
                             filled += q; cost += q * pay
-                    c2, o = api.call("GET", f"/v1/order/{resp['id']}")
-                    o = (o or {}).get("order", o) if c2 == 200 else {}
+                    o = wait_final(api, resp["id"])
                     if o.get("cumQuantity") is not None and float(o["cumQuantity"]) > filled and o.get("avgPx"):
                         filled = float(o["cumQuantity"]); ap = float(o["avgPx"]["value"])
                         cost = filled * (ap if side == "UP" else 1 - ap)
                     fee = float((o.get("commissionNotionalTotalCollected") or {}).get("value") or 0) if o else 0.0
                     rec.update(status="filled" if filled > 0 else "not_filled", filled=round(filled, 4),
-                               cost_usd=round(cost, 4), fee_usd=round(fee, 4), order_state=o.get("state"))
+                               cost_usd=round(cost, 4), fee_usd=round(fee, 4), order_state=o.get("state"),
+                               create_response=resp, final_order=o)
+                    if filled <= 0:                       # record what the public book shows right after a miss
+                        try:
+                            bid2, bs2, ask2, asz2 = PB.pm_read(slug)[:4]
+                            rec["book_after_miss"] = dict(bid=bid2, bid_size=bs2, ask=ask2, ask_size=asz2,
+                                                          price_still_shown=bool(0 < (ask2 if side == "UP" else round(1 - bid2, 4)) <= price))
+                        except Exception: pass
     with ULOCK:
         out.write(json.dumps(rec) + "\n"); out.flush()
     say(f"{rec['status']}: {signal['asset'].upper()} {signal['h']} {side} at {price} " +
         (f"filled {rec['filled']} for ${rec['cost_usd']:.2f}" if rec.get("filled") else rec.get("reason", f"http {rec.get('http')}")))
+
+
+FINAL = ("ORDER_STATE_FILLED", "ORDER_STATE_CANCELED", "ORDER_STATE_REJECTED", "ORDER_STATE_EXPIRED")
+def wait_final(api, oid, tries=8):
+    """Polls the order until Polymarket reports a final state (up to about 3 s). Returns the order (or {})."""
+    o = {}
+    for i in range(tries):
+        c, r = api.call("GET", f"/v1/order/{oid}")
+        if c == 200: o = (r or {}).get("order") or {}
+        if o.get("state") in FINAL or (o.get("leavesQuantity") is not None and float(o["leavesQuantity"]) == 0 and float(o.get("cumQuantity") or 0) > 0):
+            return o
+        time.sleep(0.4)
+    return o
 
 
 def startup(api, conf):
