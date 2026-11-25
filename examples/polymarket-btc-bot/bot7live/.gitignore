@@ -1,0 +1,6 @@
+config.json
+live_trades.jsonl
+live_errors.log
+live_run.log
+STOP
+__pycache__/
