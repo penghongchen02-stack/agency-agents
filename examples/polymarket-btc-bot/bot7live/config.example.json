@@ -1,8 +1,8 @@
 {
   "mode": "dry_run",
-  "max_usd_per_trade": 5.0,
+  "max_usd_per_trade": 100,
   "max_shares_per_trade": 100,
-  "daily_max_spend_usd": 100.0,
-  "daily_max_loss_usd": 50.0,
+  "daily_max_spend_usd": 15000,
+  "daily_max_loss_usd": 300,
   "down_price_confirmed": false
 }

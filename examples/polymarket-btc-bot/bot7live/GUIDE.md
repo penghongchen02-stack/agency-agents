@@ -107,7 +107,7 @@ In `config.json`:
 ```
 "mode": "live"
 ```
-Keep the default limits at first. Start it with `./run_live.sh`. It prints each fill:
+`config.json` is set to **paper size**: up to $100 per trade, $15,000 spent per day, and a $300 daily loss limit. To start smaller, lower `max_usd_per_trade` (for example to 5). Start it with `./run_live.sh`. It prints each fill:
 ```
 filled: BTC 5m UP at 0.86 filled 5.0 for $4.30
 ```
@@ -127,6 +127,8 @@ This shows real fills per day, with wins, losses and profit from Polymarket's of
 ---
 
 ## Settings (`config.json`)
+
+The `config.json` in this package uses paper-size limits: $100 per trade, $15,000 spent per day, $300 daily loss. The defaults below apply only if `config.json` is missing.
 
 | Setting | Default | Meaning |
 |---|---|---|
